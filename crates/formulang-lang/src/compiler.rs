@@ -42,6 +42,8 @@ pub enum CompileError {
     ParseError(String, String),
     #[error("Import cycle detected: {0}")]
     ImportCycle(String),
+    #[error("Cannot solve template formula '{0}'. Templates are for composition only.")]
+    CannotSolveTemplate(String),
 }
 
 /// Compiled representation of a nutrient
@@ -234,6 +236,30 @@ impl Compiler {
         Ok(())
     }
 
+    /// Check if a formula is marked as a template (not solvable)
+    pub fn is_template(&self, name: &str) -> bool {
+        self.symbols
+            .formulas
+            .get(name)
+            .map(|f| get_bool_property(&f.properties, "template").unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    /// Get list of all formula names
+    pub fn formula_names(&self) -> Vec<String> {
+        self.symbols.formulas.keys().cloned().collect()
+    }
+
+    /// Get list of solvable (non-template) formula names
+    pub fn solvable_formula_names(&self) -> Vec<String> {
+        self.symbols
+            .formulas
+            .iter()
+            .filter(|(_, f)| !get_bool_property(&f.properties, "template").unwrap_or(false))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Compile a formula by name into an LP problem
     pub fn compile_formula(&self, name: &str) -> Result<CompiledFormula, CompileError> {
         let formula = self
@@ -242,6 +268,11 @@ impl Compiler {
             .get(name)
             .ok_or_else(|| CompileError::UnknownFormula(name.to_string()))?
             .clone();
+
+        // Check if this is a template formula (not solvable)
+        if get_bool_property(&formula.properties, "template").unwrap_or(false) {
+            return Err(CompileError::CannotSolveTemplate(name.to_string()));
+        }
 
         let batch_size = get_number_property(&formula.properties, "batch_size")
             .ok_or_else(|| CompileError::MissingBatchSize(name.to_string()))?;
@@ -930,6 +961,24 @@ fn get_number_property(properties: &[Property], name: &str) -> Option<f64> {
     })
 }
 
+fn get_bool_property(properties: &[Property], name: &str) -> Option<bool> {
+    properties.iter().find_map(|p| {
+        if property_matches(&p.name, name) {
+            match &p.value {
+                PropertyValue::Ident(s) => match s.to_lowercase().as_str() {
+                    "true" | "yes" | "1" => Some(true),
+                    "false" | "no" | "0" => Some(false),
+                    _ => None,
+                },
+                PropertyValue::Number(n) => Some(*n != 0.0),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })
+}
+
 fn reference_to_string(r: &Reference) -> String {
     r.parts
         .iter()
@@ -1236,5 +1285,74 @@ mod tests {
         // Compile derived formula - should have protein min 18, max 30
         let compiled = compiler.compile_formula("derived").unwrap();
         assert_eq!(compiled.batch_size, 100.0);
+    }
+
+    #[test]
+    fn test_template_formula() {
+        let source = r#"
+            nutrient protein {}
+
+            ingredient corn {
+                cost 100
+                nutrients { protein 8.0 }
+            }
+
+            ingredient soy {
+                cost 300
+                nutrients { protein 45.0 }
+            }
+
+            formula poultry_base {
+                template true
+
+                nutrients {
+                    protein min 16
+                }
+
+                ingredients {
+                    corn
+                    soy
+                }
+            }
+
+            formula starter {
+                batch_size 100
+
+                nutrients {
+                    poultry_base.nutrients
+                    protein min 20
+                }
+
+                ingredients {
+                    poultry_base.ingredients
+                    corn max 50%
+                }
+            }
+        "#;
+
+        let program = Parser::parse(source).unwrap();
+        let mut compiler = Compiler::new();
+        compiler.load(&program).unwrap();
+
+        // Template formula should be marked as template
+        assert!(compiler.is_template("poultry_base"));
+        assert!(!compiler.is_template("starter"));
+
+        // Trying to solve a template formula should fail
+        let result = compiler.compile_formula("poultry_base");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            CompileError::CannotSolveTemplate(_)
+        ));
+
+        // But the derived formula should still be solvable
+        let compiled = compiler.compile_formula("starter").unwrap();
+        assert_eq!(compiled.batch_size, 100.0);
+
+        // solvable_formula_names should only include non-templates
+        let solvable = compiler.solvable_formula_names();
+        assert!(solvable.contains(&"starter".to_string()));
+        assert!(!solvable.contains(&"poultry_base".to_string()));
     }
 }

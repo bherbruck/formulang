@@ -38,3 +38,4 @@ logs/
 # Test coverage
 coverage/
 .nyc_output/
+docs/format.fm

@@ -101,6 +101,76 @@ pub fn get_completions(source: &str, position: usize) -> Result<JsValue, JsValue
     serde_wasm_bindgen::to_value(&completions).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Get list of all formulas with their metadata
+#[wasm_bindgen]
+pub fn get_formulas(source: &str) -> Result<JsValue, JsValue> {
+    let formulas = compute_formulas(source);
+    serde_wasm_bindgen::to_value(&formulas).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+#[derive(serde::Serialize)]
+struct FormulaInfo {
+    name: String,
+    display_name: Option<String>,
+    description: Option<String>,
+    is_template: bool,
+}
+
+fn compute_formulas(source: &str) -> Vec<FormulaInfo> {
+    let mut formulas = Vec::new();
+
+    if let Ok(program) = Parser::parse(source) {
+        for item in &program.items {
+            if let Item::Formula(f) = item {
+                let display_name = f.properties.iter().find_map(|p| {
+                    if p.name == "name" {
+                        match &p.value {
+                            PropertyValue::String(s) => Some(s.clone()),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                let description = f.properties.iter().find_map(|p| {
+                    if p.name == "desc" || p.name == "description" {
+                        match &p.value {
+                            PropertyValue::String(s) => Some(s.clone()),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                let is_template = f.properties.iter().any(|p| {
+                    if p.name == "template" {
+                        match &p.value {
+                            PropertyValue::Ident(s) => {
+                                matches!(s.to_lowercase().as_str(), "true" | "yes" | "1")
+                            }
+                            PropertyValue::Number(n) => *n != 0.0,
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    }
+                });
+
+                formulas.push(FormulaInfo {
+                    name: f.name.clone(),
+                    display_name,
+                    description,
+                    is_template,
+                });
+            }
+        }
+    }
+
+    formulas
+}
+
 #[derive(serde::Serialize)]
 struct Completion {
     label: String,
@@ -613,7 +683,7 @@ fn validate_program(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
     // Valid properties for each declaration type
     let nutrient_props = ["name", "code", "desc", "description", "unit"];
     let ingredient_props = ["name", "code", "desc", "description", "cost"];
-    let formula_props = ["name", "code", "desc", "description", "batch", "batch_size"];
+    let formula_props = ["name", "code", "desc", "description", "batch", "batch_size", "template"];
 
     // Second pass: check references and property scopes
     for item in &program.items {
