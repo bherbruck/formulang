@@ -184,28 +184,32 @@ struct Completion {
 enum CompletionContext {
     /// At top-level (suggest nutrient, ingredient, formula, import)
     TopLevel,
-    /// After a formula name and dot (e.g., "base.")
-    AfterFormulaDot(String),
-    /// After an ingredient name and dot (e.g., "corn.")
-    AfterIngredientDot(String),
-    /// After formula.nutrients. or formula.ingredients. (e.g., "base.nutrients.")
-    AfterBlockDot(String, String), // (formula_name, block_type)
-    /// After ingredient.nutrients. (e.g., "corn.nutrients.")
-    AfterIngredientNutrientsDot(String), // ingredient_name
-    /// After formula.block.item. (e.g., "base.nutrients.protein.")
-    AfterItemDot(String, String, String), // (formula_name, block_type, item_name)
-    /// Inside a nutrients block (suggest nutrients and formulas for composition)
-    InNutrientsBlock,
-    /// Inside an ingredients block (suggest ingredients and formulas for composition)
-    InIngredientsBlock,
-    /// Inside an ingredient's nutrients block (suggest nutrients and ingredients for composition)
+    /// After a formula/ingredient name and dot (e.g., "base." or "corn.")
+    AfterNameDot(String), // name before dot
+    /// After name.block. (e.g., "base.nutrients." or "corn.nutrients.")
+    AfterBlockDot(String, String), // (name, block_type)
+    /// After name.block.item. (e.g., "base.nutrients.protein.")
+    AfterItemDot(String, String, String), // (name, block_type, item_name)
+    /// Inside a formula's nutrients block
+    InFormulaNutrientsBlock,
+    /// Inside a formula's ingredients block
+    InFormulaIngredientsBlock,
+    /// Inside an ingredient's nutrients block
     InIngredientNutrientsBlock,
     /// General context (suggest all symbols)
     General,
 }
 
-/// Parse the text before cursor to determine completion context
-fn get_completion_context(source: &str, position: usize) -> CompletionContext {
+/// Result of context detection - includes typed prefix for filtering
+#[derive(Debug)]
+struct CompletionInfo {
+    context: CompletionContext,
+    /// The partial text typed after the last delimiter (dot or whitespace)
+    typed_prefix: String,
+}
+
+/// Parse the text before cursor to determine completion context and typed prefix
+fn get_completion_info(source: &str, position: usize) -> CompletionInfo {
     let prefix = &source[..position.min(source.len())];
 
     // Find what block we're in by looking for unmatched braces
@@ -229,7 +233,7 @@ fn get_completion_context(source: &str, position: usize) -> CompletionContext {
                 }
             } else if before.ends_with("ingredients") || before.ends_with("ings") {
                 if brace_depth >= 2 && in_formula {
-                    last_block_type = Some("ingredients");
+                    last_block_type = Some("formula_ingredients");
                 }
             } else if before.split_whitespace().last() == Some("formula") ||
                      before.split_whitespace().rev().nth(1) == Some("formula") {
@@ -252,27 +256,31 @@ fn get_completion_context(source: &str, position: usize) -> CompletionContext {
         }
     }
 
-    // Check if we're after a dot (dot completion)
+    // Get the current line
     let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let line = prefix[line_start..].trim_start();
 
+    // Check if we're in a dot-completion context
     if let Some(dot_pos) = line.rfind('.') {
         let before_dot = &line[..dot_pos];
+        let after_dot = &line[dot_pos + 1..];
 
-        // Parse the reference parts before the dot
+        // Parse the reference parts before the last dot
         let parts: Vec<&str> = before_dot.split('.').collect();
 
         match parts.len() {
             1 => {
-                // name. -> could be formula or ingredient, check later
+                // name.prefix -> completing after first dot
                 let name = parts[0].trim();
                 if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    // We'll determine if it's a formula or ingredient in compute_completions
-                    return CompletionContext::AfterFormulaDot(name.to_string());
+                    return CompletionInfo {
+                        context: CompletionContext::AfterNameDot(name.to_string()),
+                        typed_prefix: after_dot.to_string(),
+                    };
                 }
             }
             2 => {
-                // name.block. -> suggest items from that block
+                // name.block.prefix -> completing items in block
                 let name = parts[0].trim();
                 let block_name = parts[1].trim();
                 if !name.is_empty() && !block_name.is_empty() {
@@ -281,15 +289,14 @@ fn get_completion_context(source: &str, position: usize) -> CompletionContext {
                         "ingredients" | "ings" => "ingredients",
                         _ => block_name,
                     };
-                    // Could be ingredient.nutrients. or formula.nutrients.
-                    return CompletionContext::AfterBlockDot(
-                        name.to_string(),
-                        block_type.to_string(),
-                    );
+                    return CompletionInfo {
+                        context: CompletionContext::AfterBlockDot(name.to_string(), block_type.to_string()),
+                        typed_prefix: after_dot.to_string(),
+                    };
                 }
             }
             3 => {
-                // name.block.item. -> suggest min, max
+                // name.block.item.prefix -> completing min/max
                 let name = parts[0].trim();
                 let block_name = parts[1].trim();
                 let item_name = parts[2].trim();
@@ -299,179 +306,105 @@ fn get_completion_context(source: &str, position: usize) -> CompletionContext {
                         "ingredients" | "ings" => "ingredients",
                         _ => block_name,
                     };
-                    return CompletionContext::AfterItemDot(
-                        name.to_string(),
-                        block_type.to_string(),
-                        item_name.to_string(),
-                    );
+                    return CompletionInfo {
+                        context: CompletionContext::AfterItemDot(name.to_string(), block_type.to_string(), item_name.to_string()),
+                        typed_prefix: after_dot.to_string(),
+                    };
                 }
             }
             _ => {}
         }
     }
 
+    // Not in dot-completion, get the word being typed
+    let word_start = line.rfind(|c: char| c.is_whitespace() || c == '{' || c == '}')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let typed_prefix = line[word_start..].to_string();
+
     // Determine context based on block
-    match last_block_type {
-        Some("formula_nutrients") => CompletionContext::InNutrientsBlock,
+    let context = match last_block_type {
+        Some("formula_nutrients") => CompletionContext::InFormulaNutrientsBlock,
         Some("ingredient_nutrients") => CompletionContext::InIngredientNutrientsBlock,
-        Some("ingredients") => CompletionContext::InIngredientsBlock,
+        Some("formula_ingredients") => CompletionContext::InFormulaIngredientsBlock,
         _ => {
             // Check if at top level (outside any braces)
-            if brace_depth == 0 && line.is_empty() {
+            if brace_depth == 0 {
                 CompletionContext::TopLevel
             } else {
                 CompletionContext::General
             }
         }
-    }
+    };
+
+    CompletionInfo { context, typed_prefix }
 }
 
 fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
-    let mut completions = Vec::new();
-    let context = get_completion_context(source, position);
+    let info = get_completion_info(source, position);
+    let prefix_lower = info.typed_prefix.to_lowercase();
 
     // Parse current document to get defined symbols
     let program = Parser::parse(source).ok();
 
-    match context {
+    let mut completions = Vec::new();
+
+    match info.context {
         CompletionContext::TopLevel => {
-            // Suggest top-level keywords
-            completions.push(Completion {
-                label: "nutrient".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Define a nutrient".to_string()),
-                insert_text: "nutrient ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  unit \"${4:%}\"\n}".to_string(),
-            });
-            completions.push(Completion {
-                label: "ingredient".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Define an ingredient".to_string()),
-                insert_text: "ingredient ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  cost ${4:0}\n  nuts {\n    ${5:nutrient} ${6:0}\n  }\n}".to_string(),
-            });
-            completions.push(Completion {
-                label: "formula".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Define a formula".to_string()),
-                insert_text: "formula ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  desc \"${4}\"\n  batch ${5:1000}\n  \n  nuts {\n    ${6:nutrient} min ${7:0}\n  }\n  \n  ings {\n    ${8:ingredient}\n  }\n}".to_string(),
-            });
-            completions.push(Completion {
-                label: "import".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Import from another file".to_string()),
-                insert_text: "import \"${1:./file.fm}\"".to_string(),
-            });
+            // Only suggest top-level keywords at top level
+            add_completion(&mut completions, "nutrient", "keyword", "Define a nutrient",
+                "nutrient ${1:name} {\n  name \"${2:Display Name}\"\n  unit \"${3:%}\"\n}");
+            add_completion(&mut completions, "ingredient", "keyword", "Define an ingredient",
+                "ingredient ${1:name} {\n  name \"${2:Display Name}\"\n  cost ${3:0}\n  nuts {\n    ${4}\n  }\n}");
+            add_completion(&mut completions, "formula", "keyword", "Define a formula",
+                "formula ${1:name} {\n  name \"${2:Display Name}\"\n  batch ${3:1000}\n  nuts {\n    ${4}\n  }\n  ings {\n    ${5}\n  }\n}");
+            add_completion(&mut completions, "import", "keyword", "Import from another file",
+                "import \"${1:./file.fm}\"");
         }
 
-        CompletionContext::AfterFormulaDot(name) | CompletionContext::AfterIngredientDot(name) => {
-            // Check if this is a formula or ingredient
+        CompletionContext::AfterNameDot(ref name) => {
+            // After "name." - suggest properties based on what name refers to
             if let Some(ref prog) = program {
                 let is_formula = prog.items.iter().any(|item| {
-                    matches!(item, Item::Formula(f) if f.name == name)
+                    matches!(item, Item::Formula(f) if &f.name == name)
                 });
                 let is_ingredient = prog.items.iter().any(|item| {
-                    matches!(item, Item::Ingredient(i) if i.name == name)
+                    matches!(item, Item::Ingredient(i) if &i.name == name)
                 });
 
                 if is_formula {
-                    completions.push(Completion {
-                        label: "nutrients".to_string(),
-                        kind: "property".to_string(),
-                        detail: Some("Include all nutrient constraints".to_string()),
-                        insert_text: "nutrients".to_string(),
-                    });
-                    completions.push(Completion {
-                        label: "ingredients".to_string(),
-                        kind: "property".to_string(),
-                        detail: Some("Include all ingredient constraints".to_string()),
-                        insert_text: "ingredients".to_string(),
-                    });
-                    completions.push(Completion {
-                        label: "nuts".to_string(),
-                        kind: "property".to_string(),
-                        detail: Some("Include all nutrient constraints (short form)".to_string()),
-                        insert_text: "nuts".to_string(),
-                    });
-                    completions.push(Completion {
-                        label: "ings".to_string(),
-                        kind: "property".to_string(),
-                        detail: Some("Include all ingredient constraints (short form)".to_string()),
-                        insert_text: "ings".to_string(),
-                    });
+                    add_completion(&mut completions, "nutrients", "property", "All nutrient constraints", "nutrients");
+                    add_completion(&mut completions, "ingredients", "property", "All ingredient constraints", "ingredients");
+                    add_completion(&mut completions, "nuts", "property", "All nutrient constraints (short)", "nuts");
+                    add_completion(&mut completions, "ings", "property", "All ingredient constraints (short)", "ings");
                 }
 
                 if is_ingredient {
-                    completions.push(Completion {
-                        label: "nutrients".to_string(),
-                        kind: "property".to_string(),
-                        detail: Some("Include all nutrient values".to_string()),
-                        insert_text: "nutrients".to_string(),
-                    });
-                    completions.push(Completion {
-                        label: "nuts".to_string(),
-                        kind: "property".to_string(),
-                        detail: Some("Include all nutrient values (short form)".to_string()),
-                        insert_text: "nuts".to_string(),
-                    });
+                    add_completion(&mut completions, "nutrients", "property", "All nutrient values", "nutrients");
+                    add_completion(&mut completions, "nuts", "property", "All nutrient values (short)", "nuts");
                 }
             }
         }
 
-        CompletionContext::AfterBlockDot(name, block_type) => {
-            let block_type = block_type;
-
+        CompletionContext::AfterBlockDot(ref name, ref block_type) => {
+            // After "name.block." - suggest items from that block
             if let Some(ref prog) = program {
-                // Check if it's a formula
+                // Check formulas
                 for item in &prog.items {
                     if let Item::Formula(f) = item {
-                        if f.name == name {
+                        if &f.name == name {
                             if block_type == "nutrients" {
-                                // Suggest nutrients from this formula's constraints
                                 for nc in &f.nutrients {
                                     if let Some(nut_name) = get_expr_name(&nc.expr) {
-                                        completions.push(Completion {
-                                            label: nut_name.clone(),
-                                            kind: "variable".to_string(),
-                                            detail: Some(format!("Include {} constraint", nut_name)),
-                                            insert_text: nut_name,
-                                        });
-                                    }
-                                }
-                                // Also suggest all defined nutrients
-                                for item2 in &prog.items {
-                                    if let Item::Nutrient(n) = item2 {
-                                        if !completions.iter().any(|c| c.label == n.name) {
-                                            completions.push(Completion {
-                                                label: n.name.clone(),
-                                                kind: "variable".to_string(),
-                                                detail: Some("Nutrient".to_string()),
-                                                insert_text: n.name.clone(),
-                                            });
-                                        }
+                                        add_completion(&mut completions, &nut_name, "variable",
+                                            &format!("{} constraint", nut_name), &nut_name);
                                     }
                                 }
                             } else if block_type == "ingredients" {
-                                // Suggest ingredients from this formula's constraints
                                 for ic in &f.ingredients {
                                     if let Some(ing_name) = get_expr_name(&ic.expr) {
-                                        completions.push(Completion {
-                                            label: ing_name.clone(),
-                                            kind: "variable".to_string(),
-                                            detail: Some(format!("Include {} constraint", ing_name)),
-                                            insert_text: ing_name,
-                                        });
-                                    }
-                                }
-                                // Also suggest all defined ingredients
-                                for item2 in &prog.items {
-                                    if let Item::Ingredient(i) = item2 {
-                                        if !completions.iter().any(|c| c.label == i.name) {
-                                            completions.push(Completion {
-                                                label: i.name.clone(),
-                                                kind: "variable".to_string(),
-                                                detail: Some("Ingredient".to_string()),
-                                                insert_text: i.name.clone(),
-                                            });
-                                        }
+                                        add_completion(&mut completions, &ing_name, "variable",
+                                            &format!("{} constraint", ing_name), &ing_name);
                                     }
                                 }
                             }
@@ -480,21 +413,16 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
                     }
                 }
 
-                // Check if it's an ingredient (for ingredient.nutrients.)
+                // Check ingredients (for ingredient.nutrients.)
                 if block_type == "nutrients" {
                     for item in &prog.items {
                         if let Item::Ingredient(ing) = item {
-                            if ing.name == name {
-                                // Suggest nutrients from this ingredient
+                            if &ing.name == name {
                                 for nv in &ing.nutrients {
                                     if let Some(ReferencePart::Ident(nut_name)) = nv.nutrient.parts.first() {
-                                        if nv.value.is_some() && !completions.iter().any(|c| &c.label == nut_name) {
-                                            completions.push(Completion {
-                                                label: nut_name.clone(),
-                                                kind: "variable".to_string(),
-                                                detail: Some(format!("Include {} value", nut_name)),
-                                                insert_text: nut_name.clone(),
-                                            });
+                                        if nv.value.is_some() {
+                                            add_completion(&mut completions, nut_name, "variable",
+                                                &format!("{} value", nut_name), nut_name);
                                         }
                                     }
                                 }
@@ -506,150 +434,60 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
             }
         }
 
-        CompletionContext::AfterIngredientNutrientsDot(name) => {
-            // After ingredient.nutrients. -> suggest nutrient names from that ingredient
-            if let Some(ref prog) = program {
-                for item in &prog.items {
-                    if let Item::Ingredient(ing) = item {
-                        if ing.name == name {
-                            for nv in &ing.nutrients {
-                                if let Some(ReferencePart::Ident(nut_name)) = nv.nutrient.parts.first() {
-                                    if nv.value.is_some() {
-                                        completions.push(Completion {
-                                            label: nut_name.clone(),
-                                            kind: "variable".to_string(),
-                                            detail: Some(format!("Include {} value", nut_name)),
-                                            insert_text: nut_name.clone(),
-                                        });
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
+        CompletionContext::AfterItemDot(_, _, _) => {
+            // After "name.block.item." - only min/max
+            add_completion(&mut completions, "min", "keyword", "Minimum bound only", "min");
+            add_completion(&mut completions, "max", "keyword", "Maximum bound only", "max");
         }
 
-        CompletionContext::AfterItemDot(_formula_name, _block_type, _item_name) => {
-            // After formula.block.item. -> suggest min, max
-            completions.push(Completion {
-                label: "min".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Include only the minimum bound".to_string()),
-                insert_text: "min".to_string(),
-            });
-            completions.push(Completion {
-                label: "max".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Include only the maximum bound".to_string()),
-                insert_text: "max".to_string(),
-            });
-        }
-
-        CompletionContext::InNutrientsBlock => {
-            // Suggest nutrients
+        CompletionContext::InFormulaNutrientsBlock => {
+            // In formula nutrients block - suggest nutrients and formulas for composition
             if let Some(ref prog) = program {
                 for item in &prog.items {
                     match item {
                         Item::Nutrient(n) => {
-                            completions.push(Completion {
-                                label: n.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Nutrient".to_string()),
-                                insert_text: n.name.clone(),
-                            });
+                            add_completion(&mut completions, &n.name, "variable", "Nutrient", &n.name);
                         }
                         Item::Formula(f) => {
-                            // Suggest formulas for composition
-                            completions.push(Completion {
-                                label: f.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Formula (for composition)".to_string()),
-                                insert_text: f.name.clone(),
-                            });
+                            add_completion(&mut completions, &f.name, "variable",
+                                "Formula (for composition)", &f.name);
                         }
                         _ => {}
                     }
                 }
             }
-            // Add constraint keywords
-            completions.push(Completion {
-                label: "min".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Minimum constraint".to_string()),
-                insert_text: "min ${1:0}".to_string(),
-            });
-            completions.push(Completion {
-                label: "max".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Maximum constraint".to_string()),
-                insert_text: "max ${1:0}".to_string(),
-            });
         }
 
-        CompletionContext::InIngredientsBlock => {
-            // Suggest ingredients
+        CompletionContext::InFormulaIngredientsBlock => {
+            // In formula ingredients block - suggest ingredients and formulas
             if let Some(ref prog) = program {
                 for item in &prog.items {
                     match item {
                         Item::Ingredient(i) => {
-                            completions.push(Completion {
-                                label: i.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Ingredient".to_string()),
-                                insert_text: i.name.clone(),
-                            });
+                            add_completion(&mut completions, &i.name, "variable", "Ingredient", &i.name);
                         }
                         Item::Formula(f) => {
-                            // Suggest formulas for composition
-                            completions.push(Completion {
-                                label: f.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Formula (for composition)".to_string()),
-                                insert_text: f.name.clone(),
-                            });
+                            add_completion(&mut completions, &f.name, "variable",
+                                "Formula (for composition)", &f.name);
                         }
                         _ => {}
                     }
                 }
             }
-            // Add constraint keywords
-            completions.push(Completion {
-                label: "min".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Minimum constraint".to_string()),
-                insert_text: "min ${1:0}%".to_string(),
-            });
-            completions.push(Completion {
-                label: "max".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Maximum constraint".to_string()),
-                insert_text: "max ${1:0}%".to_string(),
-            });
         }
 
         CompletionContext::InIngredientNutrientsBlock => {
-            // Suggest nutrients and ingredients (for composition)
+            // In ingredient nutrients block - suggest nutrients and ingredients for composition
             if let Some(ref prog) = program {
                 for item in &prog.items {
                     match item {
                         Item::Nutrient(n) => {
-                            completions.push(Completion {
-                                label: n.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Nutrient".to_string()),
-                                insert_text: format!("{} ${{1:0}}", n.name),
-                            });
+                            add_completion(&mut completions, &n.name, "variable", "Nutrient",
+                                &format!("{} ${{1:0}}", n.name));
                         }
                         Item::Ingredient(i) => {
-                            // Suggest ingredients for composition
-                            completions.push(Completion {
-                                label: i.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Ingredient (for composition)".to_string()),
-                                insert_text: i.name.clone(),
-                            });
+                            add_completion(&mut completions, &i.name, "variable",
+                                "Ingredient (for composition)", &i.name);
                         }
                         _ => {}
                     }
@@ -658,55 +496,45 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
         }
 
         CompletionContext::General => {
-            // Suggest all symbols
+            // General context inside a block - suggest symbols but NOT top-level keywords
             if let Some(ref prog) = program {
                 for item in &prog.items {
                     match item {
                         Item::Nutrient(n) => {
-                            completions.push(Completion {
-                                label: n.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Nutrient".to_string()),
-                                insert_text: n.name.clone(),
-                            });
+                            add_completion(&mut completions, &n.name, "variable", "Nutrient", &n.name);
                         }
                         Item::Ingredient(i) => {
-                            completions.push(Completion {
-                                label: i.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Ingredient".to_string()),
-                                insert_text: i.name.clone(),
-                            });
+                            add_completion(&mut completions, &i.name, "variable", "Ingredient", &i.name);
                         }
                         Item::Formula(f) => {
-                            completions.push(Completion {
-                                label: f.name.clone(),
-                                kind: "variable".to_string(),
-                                detail: Some("Formula".to_string()),
-                                insert_text: f.name.clone(),
-                            });
+                            add_completion(&mut completions, &f.name, "variable", "Formula", &f.name);
                         }
                         _ => {}
                     }
                 }
             }
-            // Add constraint keywords
-            completions.push(Completion {
-                label: "min".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Minimum constraint".to_string()),
-                insert_text: "min ${1:0}".to_string(),
-            });
-            completions.push(Completion {
-                label: "max".to_string(),
-                kind: "keyword".to_string(),
-                detail: Some("Maximum constraint".to_string()),
-                insert_text: "max ${1:0}".to_string(),
-            });
         }
     }
 
+    // Filter completions by typed prefix
+    if !prefix_lower.is_empty() {
+        completions.retain(|c| c.label.to_lowercase().starts_with(&prefix_lower));
+    }
+
     completions
+}
+
+/// Helper to add a completion
+fn add_completion(completions: &mut Vec<Completion>, label: &str, kind: &str, detail: &str, insert_text: &str) {
+    // Avoid duplicates
+    if !completions.iter().any(|c| c.label == label) {
+        completions.push(Completion {
+            label: label.to_string(),
+            kind: kind.to_string(),
+            detail: Some(detail.to_string()),
+            insert_text: insert_text.to_string(),
+        });
+    }
 }
 
 /// Get the first identifier name from an expression
