@@ -18,22 +18,22 @@ Formulang is a domain-specific language for least-cost feed formulation.
 ```
 // Nutrients
 nutrient protein {
-  name: "Crude Protein"
-  unit: "%"
+  name "Crude Protein"
+  unit "%"
 }
 
 // Ingredients
 ingredient corn {
-  cost: 150
+  cost 150
   nutrients {
-    protein: 8.5
-    energy: 3350
+    protein 8.5
+    energy 3350
   }
 }
 
 // Formulas
 formula starter {
-  batch_size: 1000
+  batch_size 1000
 
   nutrients {
     protein min 20 max 24
@@ -50,7 +50,7 @@ formula starter {
 
 // Composition
 formula grower {
-  batch_size: 1000
+  batch_size 1000
 
   nutrients {
     starter.nutrients           // Include all

@@ -18,7 +18,7 @@ formula poultry_base {
 }
 
 formula starter {
-  batch_size: 1000
+  batch_size 1000
 
   nutrients {
     poultry_base.nutrients    // Include all nutrient constraints
@@ -60,7 +60,7 @@ Compose from multiple base formulas:
 
 ```
 formula organic_starter {
-  batch_size: 1000
+  batch_size 1000
 
   nutrients {
     poultry_base.nutrients
@@ -95,7 +95,7 @@ Include ingredient lists from other formulas:
 
 ```
 formula grower {
-  batch_size: 1000
+  batch_size 1000
 
   ingredients {
     starter.ingredients           // Include all ingredients from starter
@@ -122,7 +122,7 @@ group grains [corn, wheat, barley, oats]
 import ./groups.fm
 
 formula starter {
-  batch_size: 1000
+  batch_size 1000
 
   ingredients {
     grains.[corn, wheat, barley]   // Select from group
@@ -164,8 +164,8 @@ import ../bases/poultry.fm
 import ../bases/organic.fm
 
 formula organic_starter {
-  name: "Organic Starter"
-  batch_size: 1000
+  name "Organic Starter"
+  batch_size 1000
 
   nutrients {
     poultry_base.nutrients

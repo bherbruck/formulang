@@ -59,7 +59,7 @@ The `%` suffix is valid only in `ingredients` blocks and represents a percentage
 
 ```
 formula example {
-  batch_size: 1000
+  batch_size 1000
 
   ingredients {
     corn max 50%          // Equivalent to: corn max 500

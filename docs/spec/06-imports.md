@@ -46,8 +46,8 @@ import ./nutrients.fm
 
 ingredient corn {
   nutrients {
-    nutrients.protein: 8.5    // Qualified reference
-    nutrients.energy: 3350
+    nutrients.protein 8.5    // Qualified reference
+    nutrients.energy 3350
   }
 }
 ```
@@ -59,8 +59,8 @@ import ./nutrients.fm as n
 
 ingredient corn {
   nutrients {
-    n.protein: 8.5
-    n.energy: 3350
+    n.protein 8.5
+    n.energy 3350
   }
 }
 ```
@@ -74,8 +74,8 @@ import ./nutrients.fm { protein, energy }
 
 ingredient corn {
   nutrients {
-    protein: 8.5    // Direct reference
-    energy: 3350
+    protein 8.5    // Direct reference
+    energy 3350
   }
 }
 ```

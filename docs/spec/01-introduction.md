@@ -21,18 +21,18 @@ A Formulang program consists of:
 
 ```
 nutrient protein {
-  name: "Crude Protein"
+  name "Crude Protein"
 }
 
 ingredient corn {
-  cost: 150
+  cost 150
   nutrients {
-    protein: 8.5
+    protein 8.5
   }
 }
 
 formula starter {
-  batch_size: 1000
+  batch_size 1000
 
   nutrients {
     protein min 18 max 22
