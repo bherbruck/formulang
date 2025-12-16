@@ -47,6 +47,27 @@ interface HoverInfo {
 let wasmModule: FormulangWasm | null = null;
 
 /**
+ * Map WASM completion kind to Monaco CompletionItemKind
+ * Monaco CompletionItemKind: https://microsoft.github.io/monaco-editor/docs.html#enums/languages.CompletionItemKind.html
+ */
+function mapCompletionKind(kind: string): number {
+  switch (kind) {
+    case 'keyword':
+      return 14; // Keyword
+    case 'property':
+      return 9; // Property
+    case 'variable':
+      return 5; // Field
+    case 'function':
+      return 2; // Function
+    case 'class':
+      return 6; // Class
+    default:
+      return 5; // Field
+  }
+}
+
+/**
  * Initialize the WASM module
  * Call this before using WASM-based features
  */
@@ -175,7 +196,7 @@ export function createWasmCompletionProvider(): Monaco.languages.CompletionItemP
         return {
           suggestions: completions.map((c) => ({
             label: c.label,
-            kind: c.kind === 'keyword' ? 14 : 5, // Keyword or Field
+            kind: mapCompletionKind(c.kind),
             insertText: c.insert_text,
             insertTextRules: c.insert_text.includes('$') ? 4 : 0,
             detail: c.detail,

@@ -2,7 +2,7 @@
 
 Formulas can compose constraints from other formulas using reference inclusion.
 
-## 7.1 Including Constraints
+## 7.1 Including All Constraints
 
 Within a `nutrients` or `ingredients` block, reference another formula's block to include all its constraints:
 
@@ -32,14 +32,14 @@ formula starter {
 }
 ```
 
-## 7.2 Selective Inclusion
+## 7.2 Including Single Item Constraints
 
-Include specific constraints using bracket notation:
+Include a specific constraint using dot notation:
 
 ```
 nutrients {
-  poultry_base.nutrients.[protein, energy]    // Only these two
-  calcium min 1.0 max 1.1                     // Define others locally
+  poultry_base.nutrients.protein    // Only the protein constraint
+  calcium min 1.0 max 1.1           // Define others locally
 }
 ```
 
@@ -105,32 +105,9 @@ formula grower {
 }
 ```
 
-## 7.7 Ingredient Groups
+## 7.7 Ratio Constraints
 
-Define reusable ingredient groups for constraints:
-
-```
-// groups.fm
-ingredient corn {}
-ingredient wheat {}
-ingredient barley {}
-ingredient oats {}
-
-group grains [corn, wheat, barley, oats]
-
-// formula.fm
-import ./groups.fm
-
-formula starter {
-  batch_size 1000
-
-  ingredients {
-    grains.[corn, wheat, barley]   // Select from group
-    grains max 60%                 // Constrain entire group
-    corn max 50%                   // Individual constraint
-  }
-}
-```
+Ratio constraints (e.g., `calcium / phosphorus`) are included when using the full block reference (`formula.nutrients`). They cannot be individually referenced.
 
 ## 7.8 Complete Composition Example
 
@@ -182,3 +159,22 @@ formula organic_starter {
   }
 }
 ```
+
+## 7.9 Composition Syntax Reference
+
+| Syntax | Description |
+|--------|-------------|
+| `formula.nutrients` | Include all nutrient constraints (including ratios) |
+| `formula.nutrients.protein` | Include just the protein constraint |
+| `formula.nutrients.protein.min` | Include only the minimum bound |
+| `formula.nutrients.protein.max` | Include only the maximum bound |
+| `formula.ingredients` | Include all ingredient constraints |
+| `formula.ingredients.corn` | Include just the corn constraint |
+| `formula.ingredients.corn.min` | Include only the minimum bound |
+
+Short forms (`nuts`, `ings`) can also be used:
+
+| Short Form | Equivalent |
+|------------|------------|
+| `formula.nuts` | `formula.nutrients` |
+| `formula.ings` | `formula.ingredients` |

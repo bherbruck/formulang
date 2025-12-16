@@ -9,7 +9,7 @@ use crate::ast::*;
 use crate::compiler::Compiler;
 use crate::lexer::{Lexer, TokenKind};
 use crate::parser::Parser;
-use formulang_solver::{ConstraintViolation, Solver, SolutionStatus};
+use formulang_solver::{Solver, SolutionStatus};
 
 /// Parse source code and return the AST as JSON
 #[wasm_bindgen]
@@ -109,90 +109,430 @@ struct Completion {
     insert_text: String,
 }
 
-fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
-    let mut completions = Vec::new();
+/// Context for completions based on cursor position
+#[derive(Debug)]
+enum CompletionContext {
+    /// At top-level (suggest nutrient, ingredient, formula, import)
+    TopLevel,
+    /// After a formula name and dot (e.g., "base.")
+    AfterFormulaDot(String),
+    /// After formula.nutrients. or formula.ingredients. (e.g., "base.nutrients.")
+    AfterBlockDot(String, String), // (formula_name, block_type)
+    /// After formula.block.item. (e.g., "base.nutrients.protein.")
+    AfterItemDot(String, String, String), // (formula_name, block_type, item_name)
+    /// Inside a nutrients block (suggest nutrients and formulas for composition)
+    InNutrientsBlock,
+    /// Inside an ingredients block (suggest ingredients and formulas for composition)
+    InIngredientsBlock,
+    /// General context (suggest all symbols)
+    General,
+}
 
-    // Determine context from surrounding text
+/// Parse the text before cursor to determine completion context
+fn get_completion_context(source: &str, position: usize) -> CompletionContext {
     let prefix = &source[..position.min(source.len())];
-    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line = &prefix[line_start..];
 
-    // If at start of line or after newline, suggest top-level keywords
-    if line.trim().is_empty() || position == 0 {
-        completions.push(Completion {
-            label: "nutrient".to_string(),
-            kind: "keyword".to_string(),
-            detail: Some("Define a nutrient".to_string()),
-            insert_text: "nutrient ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  unit \"${4:%}\"\n}".to_string(),
-        });
-        completions.push(Completion {
-            label: "ingredient".to_string(),
-            kind: "keyword".to_string(),
-            detail: Some("Define an ingredient".to_string()),
-            insert_text: "ingredient ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  cost ${4:0}\n  nuts {\n    ${5:nutrient} ${6:0}\n  }\n}".to_string(),
-        });
-        completions.push(Completion {
-            label: "formula".to_string(),
-            kind: "keyword".to_string(),
-            detail: Some("Define a formula".to_string()),
-            insert_text: "formula ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  desc \"${4}\"\n  batch ${5:1000}\n  \n  nuts {\n    ${6:nutrient} min ${7:0}\n  }\n  \n  ings {\n    ${8:ingredient}\n  }\n}".to_string(),
-        });
-        completions.push(Completion {
-            label: "import".to_string(),
-            kind: "keyword".to_string(),
-            detail: Some("Import from another file".to_string()),
-            insert_text: "import \"${1:./file.fm}\"".to_string(),
-        });
-    }
+    // Find what block we're in by looking for unmatched braces
+    let mut brace_depth = 0;
+    let mut last_block_type: Option<&str> = None;
+    let mut in_formula = false;
 
-    // Parse current document to get defined symbols
-    if let Ok(program) = Parser::parse(source) {
-        for item in &program.items {
-            match item {
-                Item::Nutrient(n) => {
-                    completions.push(Completion {
-                        label: n.name.clone(),
-                        kind: "variable".to_string(),
-                        detail: Some("Nutrient".to_string()),
-                        insert_text: n.name.clone(),
-                    });
+    for (i, c) in prefix.char_indices() {
+        if c == '{' {
+            brace_depth += 1;
+            // Check what keyword preceded this brace
+            let before = prefix[..i].trim_end();
+            if before.ends_with("nutrients") || before.ends_with("nuts") {
+                if brace_depth >= 2 && in_formula {
+                    last_block_type = Some("nutrients");
                 }
-                Item::Ingredient(i) => {
-                    completions.push(Completion {
-                        label: i.name.clone(),
-                        kind: "variable".to_string(),
-                        detail: Some("Ingredient".to_string()),
-                        insert_text: i.name.clone(),
-                    });
+            } else if before.ends_with("ingredients") || before.ends_with("ings") {
+                if brace_depth >= 2 && in_formula {
+                    last_block_type = Some("ingredients");
                 }
-                Item::Formula(f) => {
-                    completions.push(Completion {
-                        label: f.name.clone(),
-                        kind: "variable".to_string(),
-                        detail: Some("Formula".to_string()),
-                        insert_text: f.name.clone(),
-                    });
-                }
-                _ => {}
+            } else if before.split_whitespace().last() == Some("formula") ||
+                     before.split_whitespace().rev().nth(1) == Some("formula") {
+                in_formula = true;
+            }
+        } else if c == '}' {
+            brace_depth -= 1;
+            if brace_depth < 2 {
+                last_block_type = None;
+            }
+            if brace_depth < 1 {
+                in_formula = false;
             }
         }
     }
 
-    // Add constraint keywords
-    completions.push(Completion {
-        label: "min".to_string(),
-        kind: "keyword".to_string(),
-        detail: Some("Minimum constraint".to_string()),
-        insert_text: "min ${1:0}".to_string(),
-    });
-    completions.push(Completion {
-        label: "max".to_string(),
-        kind: "keyword".to_string(),
-        detail: Some("Maximum constraint".to_string()),
-        insert_text: "max ${1:0}".to_string(),
-    });
+    // Check if we're after a dot (dot completion)
+    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = prefix[line_start..].trim_start();
+
+    if let Some(dot_pos) = line.rfind('.') {
+        let before_dot = &line[..dot_pos];
+
+        // Parse the reference parts before the dot
+        let parts: Vec<&str> = before_dot.split('.').collect();
+
+        match parts.len() {
+            1 => {
+                // formula_name. -> suggest nutrients, ingredients
+                let formula_name = parts[0].trim();
+                if !formula_name.is_empty() && formula_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    return CompletionContext::AfterFormulaDot(formula_name.to_string());
+                }
+            }
+            2 => {
+                // formula_name.block. -> suggest items from that block
+                let formula_name = parts[0].trim();
+                let block_name = parts[1].trim();
+                if !formula_name.is_empty() && !block_name.is_empty() {
+                    let block_type = match block_name {
+                        "nutrients" | "nuts" => "nutrients",
+                        "ingredients" | "ings" => "ingredients",
+                        _ => block_name,
+                    };
+                    return CompletionContext::AfterBlockDot(
+                        formula_name.to_string(),
+                        block_type.to_string(),
+                    );
+                }
+            }
+            3 => {
+                // formula_name.block.item. -> suggest min, max
+                let formula_name = parts[0].trim();
+                let block_name = parts[1].trim();
+                let item_name = parts[2].trim();
+                if !formula_name.is_empty() && !block_name.is_empty() && !item_name.is_empty() {
+                    let block_type = match block_name {
+                        "nutrients" | "nuts" => "nutrients",
+                        "ingredients" | "ings" => "ingredients",
+                        _ => block_name,
+                    };
+                    return CompletionContext::AfterItemDot(
+                        formula_name.to_string(),
+                        block_type.to_string(),
+                        item_name.to_string(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Determine context based on block
+    match last_block_type {
+        Some("nutrients") => CompletionContext::InNutrientsBlock,
+        Some("ingredients") => CompletionContext::InIngredientsBlock,
+        _ => {
+            // Check if at top level (outside any braces)
+            if brace_depth == 0 && line.is_empty() {
+                CompletionContext::TopLevel
+            } else {
+                CompletionContext::General
+            }
+        }
+    }
+}
+
+fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
+    let mut completions = Vec::new();
+    let context = get_completion_context(source, position);
+
+    // Parse current document to get defined symbols
+    let program = Parser::parse(source).ok();
+
+    match context {
+        CompletionContext::TopLevel => {
+            // Suggest top-level keywords
+            completions.push(Completion {
+                label: "nutrient".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Define a nutrient".to_string()),
+                insert_text: "nutrient ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  unit \"${4:%}\"\n}".to_string(),
+            });
+            completions.push(Completion {
+                label: "ingredient".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Define an ingredient".to_string()),
+                insert_text: "ingredient ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  cost ${4:0}\n  nuts {\n    ${5:nutrient} ${6:0}\n  }\n}".to_string(),
+            });
+            completions.push(Completion {
+                label: "formula".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Define a formula".to_string()),
+                insert_text: "formula ${1:name} {\n  name \"${2:Display Name}\"\n  code \"${3}\"\n  desc \"${4}\"\n  batch ${5:1000}\n  \n  nuts {\n    ${6:nutrient} min ${7:0}\n  }\n  \n  ings {\n    ${8:ingredient}\n  }\n}".to_string(),
+            });
+            completions.push(Completion {
+                label: "import".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Import from another file".to_string()),
+                insert_text: "import \"${1:./file.fm}\"".to_string(),
+            });
+        }
+
+        CompletionContext::AfterFormulaDot(formula_name) => {
+            // Check if this formula exists
+            if let Some(ref prog) = program {
+                let formula_exists = prog.items.iter().any(|item| {
+                    matches!(item, Item::Formula(f) if f.name == formula_name)
+                });
+                if formula_exists {
+                    completions.push(Completion {
+                        label: "nutrients".to_string(),
+                        kind: "property".to_string(),
+                        detail: Some("Include all nutrient constraints".to_string()),
+                        insert_text: "nutrients".to_string(),
+                    });
+                    completions.push(Completion {
+                        label: "ingredients".to_string(),
+                        kind: "property".to_string(),
+                        detail: Some("Include all ingredient constraints".to_string()),
+                        insert_text: "ingredients".to_string(),
+                    });
+                    completions.push(Completion {
+                        label: "nuts".to_string(),
+                        kind: "property".to_string(),
+                        detail: Some("Include all nutrient constraints (short form)".to_string()),
+                        insert_text: "nuts".to_string(),
+                    });
+                    completions.push(Completion {
+                        label: "ings".to_string(),
+                        kind: "property".to_string(),
+                        detail: Some("Include all ingredient constraints (short form)".to_string()),
+                        insert_text: "ings".to_string(),
+                    });
+                }
+            }
+        }
+
+        CompletionContext::AfterBlockDot(formula_name, block_type) => {
+            if let Some(ref prog) = program {
+                // Find the formula
+                for item in &prog.items {
+                    if let Item::Formula(f) = item {
+                        if f.name == formula_name {
+                            if block_type == "nutrients" {
+                                // Suggest nutrients from this formula's constraints
+                                for nc in &f.nutrients {
+                                    if let Some(name) = get_expr_name(&nc.expr) {
+                                        completions.push(Completion {
+                                            label: name.clone(),
+                                            kind: "variable".to_string(),
+                                            detail: Some(format!("Include {} constraint", name)),
+                                            insert_text: name,
+                                        });
+                                    }
+                                }
+                                // Also suggest all defined nutrients
+                                for item2 in &prog.items {
+                                    if let Item::Nutrient(n) = item2 {
+                                        if !completions.iter().any(|c| c.label == n.name) {
+                                            completions.push(Completion {
+                                                label: n.name.clone(),
+                                                kind: "variable".to_string(),
+                                                detail: Some("Nutrient".to_string()),
+                                                insert_text: n.name.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            } else if block_type == "ingredients" {
+                                // Suggest ingredients from this formula's constraints
+                                for ic in &f.ingredients {
+                                    if let Some(name) = get_expr_name(&ic.expr) {
+                                        completions.push(Completion {
+                                            label: name.clone(),
+                                            kind: "variable".to_string(),
+                                            detail: Some(format!("Include {} constraint", name)),
+                                            insert_text: name,
+                                        });
+                                    }
+                                }
+                                // Also suggest all defined ingredients
+                                for item2 in &prog.items {
+                                    if let Item::Ingredient(i) = item2 {
+                                        if !completions.iter().any(|c| c.label == i.name) {
+                                            completions.push(Completion {
+                                                label: i.name.clone(),
+                                                kind: "variable".to_string(),
+                                                detail: Some("Ingredient".to_string()),
+                                                insert_text: i.name.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        CompletionContext::AfterItemDot(_formula_name, _block_type, _item_name) => {
+            // After formula.block.item. -> suggest min, max
+            completions.push(Completion {
+                label: "min".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Include only the minimum bound".to_string()),
+                insert_text: "min".to_string(),
+            });
+            completions.push(Completion {
+                label: "max".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Include only the maximum bound".to_string()),
+                insert_text: "max".to_string(),
+            });
+        }
+
+        CompletionContext::InNutrientsBlock => {
+            // Suggest nutrients
+            if let Some(ref prog) = program {
+                for item in &prog.items {
+                    match item {
+                        Item::Nutrient(n) => {
+                            completions.push(Completion {
+                                label: n.name.clone(),
+                                kind: "variable".to_string(),
+                                detail: Some("Nutrient".to_string()),
+                                insert_text: n.name.clone(),
+                            });
+                        }
+                        Item::Formula(f) => {
+                            // Suggest formulas for composition
+                            completions.push(Completion {
+                                label: f.name.clone(),
+                                kind: "variable".to_string(),
+                                detail: Some("Formula (for composition)".to_string()),
+                                insert_text: f.name.clone(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Add constraint keywords
+            completions.push(Completion {
+                label: "min".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Minimum constraint".to_string()),
+                insert_text: "min ${1:0}".to_string(),
+            });
+            completions.push(Completion {
+                label: "max".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Maximum constraint".to_string()),
+                insert_text: "max ${1:0}".to_string(),
+            });
+        }
+
+        CompletionContext::InIngredientsBlock => {
+            // Suggest ingredients
+            if let Some(ref prog) = program {
+                for item in &prog.items {
+                    match item {
+                        Item::Ingredient(i) => {
+                            completions.push(Completion {
+                                label: i.name.clone(),
+                                kind: "variable".to_string(),
+                                detail: Some("Ingredient".to_string()),
+                                insert_text: i.name.clone(),
+                            });
+                        }
+                        Item::Formula(f) => {
+                            // Suggest formulas for composition
+                            completions.push(Completion {
+                                label: f.name.clone(),
+                                kind: "variable".to_string(),
+                                detail: Some("Formula (for composition)".to_string()),
+                                insert_text: f.name.clone(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Add constraint keywords
+            completions.push(Completion {
+                label: "min".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Minimum constraint".to_string()),
+                insert_text: "min ${1:0}%".to_string(),
+            });
+            completions.push(Completion {
+                label: "max".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Maximum constraint".to_string()),
+                insert_text: "max ${1:0}%".to_string(),
+            });
+        }
+
+        CompletionContext::General => {
+            // Suggest all symbols
+            if let Some(ref prog) = program {
+                for item in &prog.items {
+                    match item {
+                        Item::Nutrient(n) => {
+                            completions.push(Completion {
+                                label: n.name.clone(),
+                                kind: "variable".to_string(),
+                                detail: Some("Nutrient".to_string()),
+                                insert_text: n.name.clone(),
+                            });
+                        }
+                        Item::Ingredient(i) => {
+                            completions.push(Completion {
+                                label: i.name.clone(),
+                                kind: "variable".to_string(),
+                                detail: Some("Ingredient".to_string()),
+                                insert_text: i.name.clone(),
+                            });
+                        }
+                        Item::Formula(f) => {
+                            completions.push(Completion {
+                                label: f.name.clone(),
+                                kind: "variable".to_string(),
+                                detail: Some("Formula".to_string()),
+                                insert_text: f.name.clone(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Add constraint keywords
+            completions.push(Completion {
+                label: "min".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Minimum constraint".to_string()),
+                insert_text: "min ${1:0}".to_string(),
+            });
+            completions.push(Completion {
+                label: "max".to_string(),
+                kind: "keyword".to_string(),
+                detail: Some("Maximum constraint".to_string()),
+                insert_text: "max ${1:0}".to_string(),
+            });
+        }
+    }
 
     completions
+}
+
+/// Get the first identifier name from an expression
+fn get_expr_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Reference(r) => {
+            if let Some(ReferencePart::Ident(name)) = r.parts.first() {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -351,12 +691,12 @@ fn validate_program(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
 
                 // Formula nuts block: only nutrients allowed
                 for nc in &formula.nutrients {
-                    check_nutrient_expr(&nc.expr, &nutrients, &ingredients, diagnostics);
+                    check_nutrient_expr(&nc.expr, &nutrients, &ingredients, &formulas, diagnostics);
                 }
 
                 // Formula ings block: only ingredients allowed
                 for ic in &formula.ingredients {
-                    check_ingredient_expr(&ic.expr, &nutrients, &ingredients, diagnostics);
+                    check_ingredient_expr(&ic.expr, &nutrients, &ingredients, &formulas, diagnostics);
                 }
 
                 // Check for missing batch_size
@@ -385,15 +725,40 @@ fn get_reference_name(reference: &Reference) -> Option<String> {
     }
 }
 
+/// Check if a reference is a composition reference (e.g., base.nutrients, base.nutrients.protein)
+fn is_composition_reference(r: &Reference, formulas: &std::collections::HashSet<&str>) -> bool {
+    // Composition references have at least 2 parts: formula.nutrients or formula.ingredients
+    if r.parts.len() >= 2 {
+        if let (ReferencePart::Ident(formula_name), ReferencePart::Ident(block_type)) =
+            (&r.parts[0], &r.parts[1])
+        {
+            if formulas.contains(formula_name.as_str()) {
+                return matches!(
+                    block_type.as_str(),
+                    "nutrients" | "nuts" | "ingredients" | "ings"
+                );
+            }
+        }
+    }
+    false
+}
+
 /// Check that an expression in a formula's nuts block only references nutrients
 fn check_nutrient_expr(
     expr: &Expr,
     nutrients: &std::collections::HashSet<&str>,
     ingredients: &std::collections::HashSet<&str>,
+    formulas: &std::collections::HashSet<&str>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match expr {
         Expr::Reference(r) => {
+            // Check for composition reference first
+            if is_composition_reference(r, formulas) {
+                // Valid composition reference, no error
+                return;
+            }
+
             if let Some(name) = get_reference_name(r) {
                 if ingredients.contains(name.as_str()) {
                     diagnostics.push(Diagnostic {
@@ -402,7 +767,7 @@ fn check_nutrient_expr(
                         severity: "error".to_string(),
                         message: format!("'{}' is an ingredient, not a nutrient. Only nutrients can be referenced in a formula's nuts block.", name),
                     });
-                } else if !nutrients.contains(name.as_str()) {
+                } else if !nutrients.contains(name.as_str()) && !formulas.contains(name.as_str()) {
                     diagnostics.push(Diagnostic {
                         start: r.span.start,
                         end: r.span.end,
@@ -413,11 +778,11 @@ fn check_nutrient_expr(
             }
         }
         Expr::BinaryOp { left, right, .. } => {
-            check_nutrient_expr(left, nutrients, ingredients, diagnostics);
-            check_nutrient_expr(right, nutrients, ingredients, diagnostics);
+            check_nutrient_expr(left, nutrients, ingredients, formulas, diagnostics);
+            check_nutrient_expr(right, nutrients, ingredients, formulas, diagnostics);
         }
         Expr::Paren(inner) => {
-            check_nutrient_expr(inner, nutrients, ingredients, diagnostics);
+            check_nutrient_expr(inner, nutrients, ingredients, formulas, diagnostics);
         }
         Expr::Number(_) => {}
     }
@@ -428,10 +793,17 @@ fn check_ingredient_expr(
     expr: &Expr,
     nutrients: &std::collections::HashSet<&str>,
     ingredients: &std::collections::HashSet<&str>,
+    formulas: &std::collections::HashSet<&str>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match expr {
         Expr::Reference(r) => {
+            // Check for composition reference first
+            if is_composition_reference(r, formulas) {
+                // Valid composition reference, no error
+                return;
+            }
+
             if let Some(name) = get_reference_name(r) {
                 if nutrients.contains(name.as_str()) {
                     diagnostics.push(Diagnostic {
@@ -440,7 +812,7 @@ fn check_ingredient_expr(
                         severity: "error".to_string(),
                         message: format!("'{}' is a nutrient, not an ingredient. Only ingredients can be referenced in a formula's ings block.", name),
                     });
-                } else if !ingredients.contains(name.as_str()) {
+                } else if !ingredients.contains(name.as_str()) && !formulas.contains(name.as_str()) {
                     diagnostics.push(Diagnostic {
                         start: r.span.start,
                         end: r.span.end,
@@ -451,11 +823,11 @@ fn check_ingredient_expr(
             }
         }
         Expr::BinaryOp { left, right, .. } => {
-            check_ingredient_expr(left, nutrients, ingredients, diagnostics);
-            check_ingredient_expr(right, nutrients, ingredients, diagnostics);
+            check_ingredient_expr(left, nutrients, ingredients, formulas, diagnostics);
+            check_ingredient_expr(right, nutrients, ingredients, formulas, diagnostics);
         }
         Expr::Paren(inner) => {
-            check_ingredient_expr(inner, nutrients, ingredients, diagnostics);
+            check_ingredient_expr(inner, nutrients, ingredients, formulas, diagnostics);
         }
         Expr::Number(_) => {}
     }

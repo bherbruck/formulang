@@ -7,6 +7,17 @@ use thiserror::Error;
 use crate::ast::*;
 use crate::Parser;
 
+/// Details extracted from a base formula reference
+/// e.g., `base.nutrients.protein.min` -> formula="base", block="nutrients", item=Some("protein"), min_only=true
+#[derive(Debug, Clone)]
+struct ReferenceDetails {
+    formula_name: String,
+    block_type: String,
+    item_name: Option<String>,
+    min_only: bool,
+    max_only: bool,
+}
+
 #[derive(Error, Debug)]
 pub enum CompileError {
     #[error("Unknown nutrient: {0}")]
@@ -343,9 +354,9 @@ impl Compiler {
         let mut overrides: HashMap<String, NutrientConstraint> = HashMap::new();
 
         for nc in constraints {
-            if let Some(base_ref) = self.get_base_reference(&nc.expr) {
-                // This is a reference like `poultry_base.nutrients`
-                let base_constraints = self.resolve_base_nutrient_reference(&base_ref)?;
+            if let Some(details) = self.get_base_reference(&nc.expr) {
+                // This is a reference like `poultry_base.nutrients` or `poultry_base.nutrients.protein.min`
+                let base_constraints = self.resolve_base_nutrient_reference(&details)?;
                 for bc in base_constraints {
                     let key = self.constraint_key(&bc.expr);
                     if !overrides.contains_key(&key) {
@@ -383,9 +394,9 @@ impl Compiler {
         let mut overrides: HashMap<String, IngredientConstraint> = HashMap::new();
 
         for ic in constraints {
-            if let Some(base_ref) = self.get_base_reference(&ic.expr) {
-                // This is a reference like `starter.ingredients`
-                let base_constraints = self.resolve_base_ingredient_reference(&base_ref)?;
+            if let Some(details) = self.get_base_reference(&ic.expr) {
+                // This is a reference like `starter.ingredients` or `starter.ingredients.corn.max`
+                let base_constraints = self.resolve_base_ingredient_reference(&details)?;
                 for bc in base_constraints {
                     let key = self.constraint_key(&bc.expr);
                     if !overrides.contains_key(&key) {
@@ -413,15 +424,49 @@ impl Compiler {
         Ok(resolved)
     }
 
-    /// Check if an expression is a base formula reference (e.g., `base.nutrients`)
-    fn get_base_reference(&self, expr: &Expr) -> Option<(String, String)> {
+    /// Check if an expression is a base formula reference
+    /// Supports: `base.nutrients`, `base.nutrients.protein`, `base.nutrients.protein.min`
+    fn get_base_reference(&self, expr: &Expr) -> Option<ReferenceDetails> {
         if let Expr::Reference(r) = expr {
             if r.parts.len() >= 2 {
                 if let (ReferencePart::Ident(formula), ReferencePart::Ident(block)) =
                     (&r.parts[0], &r.parts[1])
                 {
-                    if block == "nutrients" || block == "ingredients" {
-                        return Some((formula.clone(), block.clone()));
+                    if block == "nutrients" || block == "ingredients" || block == "nuts" || block == "ings" {
+                        let block_normalized = if block == "nuts" { "nutrients" } else if block == "ings" { "ingredients" } else { block }.to_string();
+
+                        let mut item_name = None;
+                        let mut min_only = false;
+                        let mut max_only = false;
+
+                        // Check for item name (part 2)
+                        if r.parts.len() >= 3 {
+                            match &r.parts[2] {
+                                ReferencePart::Ident(name) => {
+                                    item_name = Some(name.clone());
+                                }
+                                ReferencePart::Min => min_only = true,
+                                ReferencePart::Max => max_only = true,
+                                _ => {}
+                            }
+                        }
+
+                        // Check for min/max after item name (part 3)
+                        if r.parts.len() >= 4 && item_name.is_some() {
+                            match &r.parts[3] {
+                                ReferencePart::Min => min_only = true,
+                                ReferencePart::Max => max_only = true,
+                                _ => {}
+                            }
+                        }
+
+                        return Some(ReferenceDetails {
+                            formula_name: formula.clone(),
+                            block_type: block_normalized,
+                            item_name,
+                            min_only,
+                            max_only,
+                        });
                     }
                 }
             }
@@ -432,32 +477,100 @@ impl Compiler {
     /// Resolve a base formula's nutrient constraints
     fn resolve_base_nutrient_reference(
         &self,
-        base_ref: &(String, String),
+        details: &ReferenceDetails,
     ) -> Result<Vec<NutrientConstraint>, CompileError> {
-        let (formula_name, _) = base_ref;
         let formula = self
             .symbols
             .formulas
-            .get(formula_name)
-            .ok_or_else(|| CompileError::UnknownFormula(formula_name.clone()))?;
+            .get(&details.formula_name)
+            .ok_or_else(|| CompileError::UnknownFormula(details.formula_name.clone()))?;
 
         // Recursively resolve (to support chained inheritance)
-        self.resolve_nutrient_constraints(&formula.nutrients)
+        let mut constraints = self.resolve_nutrient_constraints(&formula.nutrients)?;
+
+        // Filter by item name if specified
+        if let Some(ref item_name) = details.item_name {
+            constraints = constraints
+                .into_iter()
+                .filter(|c| {
+                    // Check if constraint expression matches the item name
+                    if let Expr::Reference(r) = &c.expr {
+                        if let Some(ReferencePart::Ident(name)) = r.parts.first() {
+                            return name == item_name;
+                        }
+                    }
+                    false
+                })
+                .collect();
+        }
+
+        // Filter bounds if min_only or max_only specified
+        if details.min_only || details.max_only {
+            constraints = constraints
+                .into_iter()
+                .map(|mut c| {
+                    if details.min_only {
+                        c.bounds.max = None;
+                    }
+                    if details.max_only {
+                        c.bounds.min = None;
+                    }
+                    c
+                })
+                .filter(|c| c.bounds.min.is_some() || c.bounds.max.is_some())
+                .collect();
+        }
+
+        Ok(constraints)
     }
 
     /// Resolve a base formula's ingredient constraints
     fn resolve_base_ingredient_reference(
         &self,
-        base_ref: &(String, String),
+        details: &ReferenceDetails,
     ) -> Result<Vec<IngredientConstraint>, CompileError> {
-        let (formula_name, _) = base_ref;
         let formula = self
             .symbols
             .formulas
-            .get(formula_name)
-            .ok_or_else(|| CompileError::UnknownFormula(formula_name.clone()))?;
+            .get(&details.formula_name)
+            .ok_or_else(|| CompileError::UnknownFormula(details.formula_name.clone()))?;
 
-        self.resolve_ingredient_constraints(&formula.ingredients)
+        let mut constraints = self.resolve_ingredient_constraints(&formula.ingredients)?;
+
+        // Filter by item name if specified
+        if let Some(ref item_name) = details.item_name {
+            constraints = constraints
+                .into_iter()
+                .filter(|c| {
+                    // Check if constraint expression matches the item name
+                    if let Expr::Reference(r) = &c.expr {
+                        if let Some(ReferencePart::Ident(name)) = r.parts.first() {
+                            return name == item_name;
+                        }
+                    }
+                    false
+                })
+                .collect();
+        }
+
+        // Filter bounds if min_only or max_only specified
+        if details.min_only || details.max_only {
+            constraints = constraints
+                .into_iter()
+                .map(|mut c| {
+                    if details.min_only {
+                        c.bounds.max = None;
+                    }
+                    if details.max_only {
+                        c.bounds.min = None;
+                    }
+                    c
+                })
+                .filter(|c| c.bounds.min.is_some() || c.bounds.max.is_some())
+                .collect();
+        }
+
+        Ok(constraints)
     }
 
     /// Get a unique key for a constraint (for override matching)
@@ -976,5 +1089,152 @@ mod tests {
         assert_eq!(compiled.batch_size, 100.0);
         // Verify that 'desc' maps to description
         assert_eq!(compiled.description, Some("Test formula using short aliases".to_string()));
+    }
+
+    #[test]
+    fn test_composition_basic() {
+        let source = r#"
+            nutrient protein {}
+            nutrient energy {}
+
+            ingredient corn {
+                cost 100
+                nutrients { protein 8.0 energy 3350 }
+            }
+
+            ingredient soy {
+                cost 300
+                nutrients { protein 45.0 energy 2200 }
+            }
+
+            formula base {
+                batch_size 100
+
+                nutrients {
+                    protein min 18 max 24
+                    energy min 2800
+                }
+
+                ingredients {
+                    corn max 60%
+                    soy min 10%
+                }
+            }
+
+            formula derived {
+                batch_size 100
+
+                nutrients {
+                    base.nutrients
+                    protein min 20
+                }
+
+                ingredients {
+                    base.ingredients
+                    corn max 50%
+                }
+            }
+        "#;
+
+        let program = Parser::parse(source).unwrap();
+        let mut compiler = Compiler::new();
+        compiler.load(&program).unwrap();
+
+        // Compile derived formula - should have inherited constraints with overrides
+        let compiled = compiler.compile_formula("derived").unwrap();
+
+        assert_eq!(compiled.batch_size, 100.0);
+        assert!(compiled.ingredients.contains(&"corn".to_string()));
+        assert!(compiled.ingredients.contains(&"soy".to_string()));
+    }
+
+    #[test]
+    fn test_composition_single_item() {
+        let source = r#"
+            nutrient protein {}
+            nutrient energy {}
+
+            ingredient corn {
+                cost 100
+                nutrients { protein 8.0 energy 3350 }
+            }
+
+            formula base {
+                batch_size 100
+
+                nutrients {
+                    protein min 18 max 24
+                    energy min 2800
+                }
+            }
+
+            formula derived {
+                batch_size 100
+
+                nutrients {
+                    base.nutrients.protein
+                    energy min 3000
+                }
+
+                ingredients {
+                    corn
+                }
+            }
+        "#;
+
+        let program = Parser::parse(source).unwrap();
+        let mut compiler = Compiler::new();
+        compiler.load(&program).unwrap();
+
+        // Compile derived formula - should have inherited only protein constraint
+        let compiled = compiler.compile_formula("derived").unwrap();
+        assert_eq!(compiled.batch_size, 100.0);
+    }
+
+    #[test]
+    fn test_composition_partial_constraint() {
+        let source = r#"
+            nutrient protein {}
+
+            ingredient corn {
+                cost 100
+                nutrients { protein 8.0 }
+            }
+
+            ingredient soy {
+                cost 300
+                nutrients { protein 45.0 }
+            }
+
+            formula base {
+                batch_size 100
+
+                nutrients {
+                    protein min 18 max 24
+                }
+            }
+
+            formula derived {
+                batch_size 100
+
+                nutrients {
+                    base.nutrients.protein.min
+                    protein max 30
+                }
+
+                ingredients {
+                    corn
+                    soy
+                }
+            }
+        "#;
+
+        let program = Parser::parse(source).unwrap();
+        let mut compiler = Compiler::new();
+        compiler.load(&program).unwrap();
+
+        // Compile derived formula - should have protein min 18, max 30
+        let compiled = compiler.compile_formula("derived").unwrap();
+        assert_eq!(compiled.batch_size, 100.0);
     }
 }

@@ -548,11 +548,16 @@ impl Parser {
             match self.peek_kind() {
                 TokenKind::Ident => {
                     let token = self.advance().unwrap();
-                    match token.text.as_str() {
-                        "min" => parts.push(ReferencePart::Min),
-                        "max" => parts.push(ReferencePart::Max),
-                        _ => parts.push(ReferencePart::Ident(token.text.clone())),
-                    }
+                    parts.push(ReferencePart::Ident(token.text.clone()));
+                }
+                // Handle min/max as reference parts (e.g., base.nutrients.protein.min)
+                TokenKind::Min => {
+                    self.advance();
+                    parts.push(ReferencePart::Min);
+                }
+                TokenKind::Max => {
+                    self.advance();
+                    parts.push(ReferencePart::Max);
                 }
                 TokenKind::LBracket => {
                     self.advance();
