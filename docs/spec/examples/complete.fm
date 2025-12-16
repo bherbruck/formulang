@@ -1,0 +1,102 @@
+// Complete example with nutrients, ingredients, and formulas
+
+nutrient protein {
+  name "Crude Protein"
+  unit "%"
+}
+
+nutrient energy {
+  name "Metabolizable Energy"
+  unit "kcal/kg"
+}
+
+nutrient fiber {
+  name "Crude Fiber"
+  unit "%"
+}
+
+nutrient calcium {
+  name "Calcium"
+  unit "%"
+}
+
+nutrient phosphorus {
+  name "Available Phosphorus"
+  unit "%"
+}
+
+ingredient corn {
+  name "Yellow Corn"
+  cost 150
+  nutrients {
+    protein 8.5
+    energy 3350
+    fiber 2.2
+    calcium 0.02
+    phosphorus 0.08
+  }
+}
+
+ingredient soybean_meal {
+  name "Soybean Meal 48%"
+  cost 450
+  nutrients {
+    protein 48.0
+    energy 2230
+    fiber 3.5
+    calcium 0.30
+    phosphorus 0.27
+  }
+}
+
+ingredient wheat_midds {
+  name "Wheat Middlings"
+  cost 180
+  nutrients {
+    protein 15.5
+    energy 2600
+    fiber 7.0
+    calcium 0.12
+    phosphorus 0.35
+  }
+}
+
+ingredient limestone {
+  name "Limestone"
+  cost 50
+  nutrients {
+    calcium 38.0
+    phosphorus 0.0
+  }
+}
+
+ingredient dicalcium_phosphate {
+  name "Dicalcium Phosphate"
+  cost 600
+  nutrients {
+    calcium 22.0
+    phosphorus 18.5
+  }
+}
+
+formula starter {
+  name "Starter Feed"
+  description "For chicks 0-3 weeks"
+  batch_size 1000
+
+  nutrients {
+    protein min 20 max 24
+    energy min 2900
+    fiber max 5
+    calcium min 0.9 max 1.2
+    phosphorus min 0.4 max 0.7
+  }
+
+  ingredients {
+    corn max 70%
+    soybean_meal min 15% max 45%
+    wheat_midds max 15%
+    limestone max 3%
+    dicalcium_phosphate max 3%
+  }
+}

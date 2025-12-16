@@ -1,0 +1,60 @@
+import ./nutrients.fm { * }
+
+ingredient corn {
+  name "Yellow Corn"
+  cost 150
+  nutrients {
+    protein 8.5
+    energy 3350
+    fiber 2.2
+    calcium 0.02
+    phosphorus 0.08
+  }
+}
+
+ingredient soybean_meal {
+  name "Soybean Meal 48%"
+  cost 450
+  nutrients {
+    protein 48.0
+    energy 2230
+    fiber 3.5
+    calcium 0.30
+    phosphorus 0.27
+  }
+}
+
+ingredient wheat_midds {
+  name "Wheat Middlings"
+  cost 180
+  nutrients {
+    protein 15.5
+    energy 2600
+    fiber 7.0
+    calcium 0.12
+    phosphorus 0.35
+  }
+}
+
+ingredient limestone {
+  name "Limestone"
+  cost 50
+  nutrients {
+    calcium 38.0
+  }
+}
+
+ingredient dicalcium_phosphate {
+  name "Dicalcium Phosphate"
+  cost 600
+  nutrients {
+    calcium 22.0
+    phosphorus 18.5
+  }
+}
+
+ingredient vitamin_premix {
+  name "Vitamin/Mineral Premix"
+  cost 2500
+  nutrients {}
+}

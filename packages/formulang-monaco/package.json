@@ -1,0 +1,39 @@
+{
+  "name": "formulang-monaco",
+  "version": "0.1.0",
+  "description": "Monaco editor language support for Formulang DSL",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "formulang-lang": "file:../../crates/formulang-lang/pkg"
+  },
+  "devDependencies": {
+    "monaco-editor": "^0.45.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "monaco-editor": ">=0.40.0"
+  },
+  "keywords": [
+    "monaco",
+    "editor",
+    "formulang",
+    "feed",
+    "formulation",
+    "dsl"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bherbruck/formulang"
+  }
+}

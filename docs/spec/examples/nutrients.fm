@@ -1,0 +1,24 @@
+nutrient protein {
+  name "Crude Protein"
+  unit "%"
+}
+
+nutrient energy {
+  name "Metabolizable Energy"
+  unit "kcal/kg"
+}
+
+nutrient fiber {
+  name "Crude Fiber"
+  unit "%"
+}
+
+nutrient calcium {
+  name "Calcium"
+  unit "%"
+}
+
+nutrient phosphorus {
+  name "Available Phosphorus"
+  unit "%"
+}

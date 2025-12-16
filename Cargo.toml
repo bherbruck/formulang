@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/bherbruck/formulang"
+
+[workspace.dependencies]
+formulang-lang = { path = "crates/formulang-lang" }
+formulang-solver = { path = "crates/formulang-solver" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+js-sys = "0.3"

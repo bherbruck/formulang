@@ -1,0 +1,75 @@
+import ./nutrients.fm { * }
+import ./ingredients.fm { * }
+
+// Base formula with common poultry constraints
+formula poultry_base {
+  nutrients {
+    fiber max 7
+    calcium min 0.8 max 1.5
+    phosphorus min 0.35 max 0.8
+    calcium / phosphorus min 1.5 max 2.5
+  }
+}
+
+// Starter feed - high protein for young birds
+formula starter {
+  name "Starter Feed"
+  description "For chicks 0-3 weeks"
+  batch_size 1000
+
+  nutrients {
+    poultry_base.nutrients
+    protein min 20 max 24
+    energy min 2900
+  }
+
+  ingredients {
+    corn max 50%
+    soybean_meal min 20% max 40%
+    wheat_midds max 10%
+    limestone min 0.5% max 2%
+    dicalcium_phosphate max 2%
+    vitamin_premix min 0.25% max 0.5%
+  }
+}
+
+// Grower feed - inherits from starter with modifications
+formula grower {
+  name "Grower Feed"
+  description "For birds 3-6 weeks"
+  batch_size 1000
+
+  nutrients {
+    poultry_base.nutrients
+    protein min 18 max 22
+    energy min 3000
+  }
+
+  ingredients {
+    starter.ingredients
+    corn max 60%
+    soybean_meal min 15% max 35%
+  }
+}
+
+// Finisher feed - lower protein, higher energy
+formula finisher {
+  name "Finisher Feed"
+  description "For birds 6+ weeks"
+  batch_size 1000
+
+  nutrients {
+    poultry_base.nutrients
+    protein min 16 max 20
+    energy min 3100
+  }
+
+  ingredients {
+    corn max 65%
+    soybean_meal min 10% max 30%
+    wheat_midds max 15%
+    limestone min 0.5% max 2%
+    dicalcium_phosphate max 2%
+    vitamin_premix min 0.25% max 0.5%
+  }
+}
