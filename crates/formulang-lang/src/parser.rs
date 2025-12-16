@@ -368,13 +368,24 @@ impl Parser {
         let start = self.current().map(|t| t.span).unwrap_or(Span::new(0, 0));
         let nutrient = self.parse_reference()?;
         self.skip_newlines_and_comments();
-        let value_token = self.expect(TokenKind::Number)?;
-        let value: f64 = value_token.text.parse().map_err(|_| {
-            ParseError::InvalidNumber(value_token.text.clone())
-        })?;
+
+        // Value is optional - if not present, this is a composition reference
+        let (value, end) = if self.peek_kind() == TokenKind::Number {
+            let value_token = self.advance().unwrap();
+            let value: f64 = value_token.text.parse().map_err(|_| {
+                ParseError::InvalidNumber(value_token.text.clone())
+            })?;
+            (Some(value), value_token.span.end)
+        } else {
+            // No value - this is a composition reference like `corn.nutrients`
+            let end = self.tokens.get(self.pos.saturating_sub(1))
+                .map(|t| t.span.end)
+                .unwrap_or(start.end);
+            (None, end)
+        };
 
         Ok(NutrientValue {
-            span: Span::new(start.start, value_token.span.end),
+            span: Span::new(start.start, end),
             nutrient,
             value,
         })

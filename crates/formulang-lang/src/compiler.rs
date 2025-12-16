@@ -210,8 +210,20 @@ impl Compiler {
 
                     let mut nutrients = HashMap::new();
                     for nv in &i.nutrients {
-                        let nutrient_name = reference_to_string(&nv.nutrient);
-                        nutrients.insert(nutrient_name, nv.value);
+                        match nv.value {
+                            Some(value) => {
+                                // Direct nutrient value: `protein 8.5`
+                                let nutrient_name = reference_to_string(&nv.nutrient);
+                                nutrients.insert(nutrient_name, value);
+                            }
+                            None => {
+                                // Composition reference: `corn.nutrients`
+                                self.resolve_ingredient_nutrient_reference(
+                                    &nv.nutrient,
+                                    &mut nutrients,
+                                )?;
+                            }
+                        }
                     }
 
                     self.symbols.ingredients.insert(
@@ -453,6 +465,61 @@ impl Compiler {
         }
 
         Ok(resolved)
+    }
+
+    /// Resolve an ingredient nutrient composition reference
+    /// Supports: `ingredient.nutrients`, `ingredient.nutrients.protein`
+    fn resolve_ingredient_nutrient_reference(
+        &self,
+        reference: &Reference,
+        target: &mut HashMap<String, f64>,
+    ) -> Result<(), CompileError> {
+        if reference.parts.len() < 2 {
+            return Err(CompileError::InvalidReference(
+                "Expected ingredient.nutrients reference".to_string(),
+            ));
+        }
+
+        let (ingredient_name, block_type) = match (&reference.parts[0], &reference.parts[1]) {
+            (ReferencePart::Ident(name), ReferencePart::Ident(block)) => (name, block),
+            _ => {
+                return Err(CompileError::InvalidReference(
+                    "Expected ingredient.nutrients reference".to_string(),
+                ));
+            }
+        };
+
+        // Verify it's a nutrients reference
+        if block_type != "nutrients" && block_type != "nuts" {
+            return Err(CompileError::InvalidReference(format!(
+                "Expected .nutrients, got .{}",
+                block_type
+            )));
+        }
+
+        // Get the source ingredient
+        let source = self
+            .symbols
+            .ingredients
+            .get(ingredient_name)
+            .ok_or_else(|| CompileError::UnknownIngredient(ingredient_name.clone()))?;
+
+        // Check if we're getting a specific nutrient or all nutrients
+        if reference.parts.len() >= 3 {
+            // Specific nutrient: `corn.nutrients.protein`
+            if let ReferencePart::Ident(nutrient_name) = &reference.parts[2] {
+                if let Some(value) = source.nutrients.get(nutrient_name) {
+                    target.insert(nutrient_name.clone(), *value);
+                }
+            }
+        } else {
+            // All nutrients: `corn.nutrients`
+            for (nutrient_name, value) in &source.nutrients {
+                target.insert(nutrient_name.clone(), *value);
+            }
+        }
+
+        Ok(())
     }
 
     /// Check if an expression is a base formula reference
@@ -1354,5 +1421,73 @@ mod tests {
         let solvable = compiler.solvable_formula_names();
         assert!(solvable.contains(&"starter".to_string()));
         assert!(!solvable.contains(&"poultry_base".to_string()));
+    }
+
+    #[test]
+    fn test_ingredient_composition() {
+        let source = r#"
+            nutrient protein {}
+            nutrient energy {}
+            nutrient fiber {}
+
+            ingredient corn {
+                cost 100
+                nutrients {
+                    protein 8.5
+                    energy 3350
+                    fiber 2.5
+                }
+            }
+
+            ingredient corn_meal {
+                cost 120
+                nutrients {
+                    corn.nutrients    // Copy all from corn
+                    protein 7.5       // Override protein
+                }
+            }
+
+            ingredient corn_gluten {
+                cost 400
+                nutrients {
+                    corn.nutrients.energy   // Copy only energy from corn
+                    protein 60.0
+                    fiber 1.0
+                }
+            }
+
+            formula test {
+                batch_size 100
+                nutrients {
+                    protein min 20
+                }
+                ingredients {
+                    corn
+                    corn_meal
+                    corn_gluten
+                }
+            }
+        "#;
+
+        let program = Parser::parse(source).unwrap();
+        let mut compiler = Compiler::new();
+        compiler.load(&program).unwrap();
+
+        // Check corn_meal nutrients (should have corn's nutrients with protein overridden)
+        let corn_meal = compiler.symbols.ingredients.get("corn_meal").unwrap();
+        assert_eq!(corn_meal.nutrients.get("protein"), Some(&7.5)); // Overridden
+        assert_eq!(corn_meal.nutrients.get("energy"), Some(&3350.0)); // Inherited
+        assert_eq!(corn_meal.nutrients.get("fiber"), Some(&2.5)); // Inherited
+
+        // Check corn_gluten nutrients (should have only energy from corn, rest defined locally)
+        let corn_gluten = compiler.symbols.ingredients.get("corn_gluten").unwrap();
+        assert_eq!(corn_gluten.nutrients.get("protein"), Some(&60.0)); // Local
+        assert_eq!(corn_gluten.nutrients.get("energy"), Some(&3350.0)); // Inherited from corn
+        assert_eq!(corn_gluten.nutrients.get("fiber"), Some(&1.0)); // Local
+
+        // Should still be able to compile and solve
+        let compiled = compiler.compile_formula("test").unwrap();
+        assert_eq!(compiled.batch_size, 100.0);
+        assert_eq!(compiled.ingredients.len(), 3);
     }
 }

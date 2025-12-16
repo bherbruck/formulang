@@ -53,7 +53,8 @@ pub struct Ingredient {
 pub struct NutrientValue {
     pub span: Span,
     pub nutrient: Reference,
-    pub value: f64,
+    /// The nutrient value. None means this is a composition reference (e.g., `corn.nutrients`)
+    pub value: Option<f64>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
