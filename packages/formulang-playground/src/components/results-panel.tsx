@@ -2,47 +2,9 @@ import { FileCode, FlaskConical, Loader2, BarChart3 } from "lucide-react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { FormulasTable } from "./formulas-table";
+import { ResultsTable, type SolveResult } from "./results-table";
 
-export interface SolveResult {
-  status: "optimal" | "infeasible" | "error";
-  formula: string;
-  description?: string;
-  batchSize: number;
-  totalCost: number;
-  ingredients: Array<{
-    id: string;
-    name?: string;
-    code?: string;
-    amount: number;
-    percentage: number;
-    unitCost: number;
-    cost: number;
-    costPercentage: number;
-  }>;
-  nutrients: Array<{
-    id: string;
-    name?: string;
-    code?: string;
-    value: number;
-    unit?: string;
-  }>;
-  analysis?: {
-    bindingConstraints: string[];
-    shadowPrices: Array<{
-      constraint: string;
-      value: number;
-      interpretation: string;
-    }>;
-  };
-  violations?: Array<{
-    constraint: string;
-    required: number;
-    actual: number;
-    violationAmount: number;
-    description: string;
-  }>;
-}
+export type { SolveResult };
 
 export interface ParseResult {
   nutrients: number;
@@ -53,18 +15,20 @@ export interface ParseResult {
 interface ResultsPanelProps {
   parseResult: ParseResult | null;
   solveResults: Record<string, SolveResult>;
-  loadingFormula: string | null;
+  loadingFormulas: Set<string>;
   onSolve: (formulaName: string) => void;
   onSolveAll: () => void;
+  onRefresh: () => void;
   wasmReady: boolean;
 }
 
 export function ResultsPanel({
   parseResult,
   solveResults,
-  loadingFormula,
+  loadingFormulas,
   onSolve,
   onSolveAll,
+  onRefresh,
   wasmReady,
 }: ResultsPanelProps) {
   const formulas = parseResult?.formulas || [];
@@ -99,7 +63,7 @@ export function ResultsPanel({
           value="results"
           className="mt-0 min-h-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col"
         >
-          <ScrollArea className="h-full">
+          <ScrollArea className="grid h-full">
             {formulas.length === 0 ? (
               <div className="flex h-64 flex-col items-center justify-center text-center text-muted-foreground">
                 <FlaskConical className="mb-4 h-12 w-12 opacity-20" />
@@ -111,12 +75,13 @@ export function ResultsPanel({
                 </p>
               </div>
             ) : (
-              <FormulasTable
+              <ResultsTable
                 formulas={formulas}
                 solveResults={solveResults}
-                loadingFormula={loadingFormula}
+                loadingFormulas={loadingFormulas}
                 onSolve={onSolve}
                 onSolveAll={onSolveAll}
+                onRefresh={onRefresh}
                 wasmReady={wasmReady}
               />
             )}

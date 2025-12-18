@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { FlaskConical, Github, Moon, Sun } from "lucide-react";
-import init, { solve as wasmSolve } from "formulang-lang";
+import init, { solve as wasmSolve, get_formulas as wasmGetFormulas } from "formulang-lang";
 
 import { Button } from "@/components/ui/button";
 import { EditorPanel } from "@/components/editor-panel";
@@ -9,8 +9,10 @@ import {
   type SolveResult,
   type ParseResult,
 } from "@/components/results-panel";
+import { TableConfigProvider } from "@/hooks/use-table-config";
 
 const STORAGE_KEY = "formulang-playground-code";
+const THEME_STORAGE_KEY = "formulang-playground-theme";
 
 const EXAMPLE_CODE = `// Formulang - Least Cost Feed Formulation DSL
 
@@ -119,6 +121,8 @@ formula starter {
 interface WasmSolveResult {
   status: string;
   formula: string;
+  formula_name?: string;
+  formula_code?: string;
   description?: string;
   batch_size: number;
   total_cost: number;
@@ -165,8 +169,20 @@ function App() {
   const [solveResults, setSolveResults] = useState<Record<string, SolveResult>>(
     {}
   );
-  const [loadingFormula, setLoadingFormula] = useState<string | null>(null);
-  const [isDark, setIsDark] = useState(true);
+  const [loadingFormulas, setLoadingFormulas] = useState<Set<string>>(new Set());
+  const [isDark, setIsDark] = useState(() => {
+    if (typeof window !== "undefined") {
+      // Check localStorage first, then system preference
+      const stored = localStorage.getItem(THEME_STORAGE_KEY);
+      const prefersDark = stored !== null
+        ? stored === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      // Set class immediately to avoid flash
+      document.documentElement.classList.toggle("dark", prefersDark);
+      return prefersDark;
+    }
+    return true;
+  });
   const [wasmReady, setWasmReady] = useState(false);
   const wasmInitialized = useRef(false);
 
@@ -185,18 +201,29 @@ function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
+    localStorage.setItem(THEME_STORAGE_KEY, isDark ? "dark" : "light");
   }, [isDark]);
 
   useEffect(() => {
-    const formulaRegex = /formula\s+(\w+)\s*\{/g;
-    const formulas: string[] = [];
-    let match;
-    while ((match = formulaRegex.exec(code)) !== null) {
-      formulas.push(match[1]);
+    // Only update parseResult for the editor panel badges (nutrients/ingredients/formulas counts)
+    // This is fast and doesn't affect solve results
+    if (!wasmReady) return;
+
+    let formulas: string[] = [];
+    try {
+      const formulaInfos = wasmGetFormulas(code) as Array<{ name: string }>;
+      formulas = formulaInfos.map((f) => f.name);
+    } catch {
+      // Fallback to regex if WASM fails (but include template filter)
+      const formulaRegex = /(?<!template\s+)formula\s+(\w+)\s*\{/g;
+      let match;
+      while ((match = formulaRegex.exec(code)) !== null) {
+        formulas.push(match[1]);
+      }
     }
 
     const nutrientCount = (code.match(/nutrient\s+\w+\s*\{/g) || []).length;
-    const ingredientCount = (code.match(/ingredient\s+\w+\s*\{/g) || []).length;
+    const ingredientCount = (code.match(/(?<!template\s+)ingredient\s+\w+\s*\{/g) || []).length;
 
     setParseResult({
       nutrients: nutrientCount,
@@ -204,32 +231,36 @@ function App() {
       formulas,
     });
 
-    // Clear results for formulas that no longer exist
-    setSolveResults((prev) => {
-      const newResults: Record<string, SolveResult> = {};
-      for (const name of formulas) {
-        if (prev[name]) {
-          newResults[name] = prev[name];
-        }
-      }
-      return newResults;
-    });
-  }, [code]);
+    // DON'T clear solve results on code change - only clear when formula is deleted
+    // Results stay until user re-solves or formula no longer exists
+  }, [code, wasmReady]);
 
   const handleSolve = useCallback(
-    (formulaName: string) => {
+    async (formulaName: string) => {
       if (!wasmReady) return;
 
-      setLoadingFormula(formulaName);
+      setLoadingFormulas((prev) => new Set(prev).add(formulaName));
+
+      // Minimum loading duration for visual feedback
+      const minLoadingTime = 150;
+      const startTime = Date.now();
 
       try {
         const result = wasmSolve(code, formulaName) as WasmSolveResult;
+
+        // Ensure minimum loading time for visual feedback
+        const elapsed = Date.now() - startTime;
+        if (elapsed < minLoadingTime) {
+          await new Promise((resolve) => setTimeout(resolve, minLoadingTime - elapsed));
+        }
 
         setSolveResults((prev) => ({
           ...prev,
           [formulaName]: {
             status: result.status as "optimal" | "infeasible" | "error",
             formula: result.formula,
+            formulaName: result.formula_name,
+            formulaCode: result.formula_code,
             description: result.description,
             batchSize: result.batch_size,
             totalCost: result.total_cost,
@@ -267,6 +298,13 @@ function App() {
         }));
       } catch (err) {
         console.error("Solve error:", err);
+
+        // Ensure minimum loading time even on error
+        const elapsed = Date.now() - startTime;
+        if (elapsed < minLoadingTime) {
+          await new Promise((resolve) => setTimeout(resolve, minLoadingTime - elapsed));
+        }
+
         setSolveResults((prev) => ({
           ...prev,
           [formulaName]: {
@@ -280,7 +318,11 @@ function App() {
           },
         }));
       } finally {
-        setLoadingFormula(null);
+        setLoadingFormulas((prev) => {
+          const next = new Set(prev);
+          next.delete(formulaName);
+          return next;
+        });
       }
     },
     [code, wasmReady]
@@ -294,54 +336,74 @@ function App() {
     }
   }, [wasmReady, parseResult, handleSolve]);
 
-  return (
-    <div className="flex h-screen flex-col bg-background">
-      <header className="flex h-14 items-center justify-between border-b px-4">
-        <div className="flex items-center gap-2">
-          <FlaskConical className="h-6 w-6 text-primary" />
-          <h1 className="text-lg font-semibold">Formulang Playground</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setIsDark(!isDark)}
-          >
-            {isDark ? (
-              <Sun className="h-4 w-4" />
-            ) : (
-              <Moon className="h-4 w-4" />
-            )}
-          </Button>
-          <Button variant="ghost" size="icon" asChild>
-            <a
-              href="https://github.com/bherbruck/formulang"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <Github className="h-4 w-4" />
-            </a>
-          </Button>
-        </div>
-      </header>
+  const handleRefresh = useCallback(() => {
+    // Only remove results for formulas that no longer exist
+    // Keep results for formulas that still exist in the code
+    if (!parseResult) return;
 
-      <div className="flex flex-1 overflow-hidden">
-        <EditorPanel
-          code={code}
-          onCodeChange={setCode}
-          parseResult={parseResult}
-          isDark={isDark}
-        />
-        <ResultsPanel
-          parseResult={parseResult}
-          solveResults={solveResults}
-          loadingFormula={loadingFormula}
-          onSolve={handleSolve}
-          onSolveAll={handleSolveAll}
-          wasmReady={wasmReady}
-        />
+    setSolveResults((prev) => {
+      const newResults: Record<string, SolveResult> = {};
+      for (const name of parseResult.formulas) {
+        if (prev[name]) {
+          newResults[name] = prev[name];
+        }
+      }
+      return newResults;
+    });
+  }, [parseResult]);
+
+  return (
+    <TableConfigProvider>
+      <div className="flex h-screen flex-col bg-background">
+        <header className="flex h-14 items-center justify-between border-b px-4">
+          <div className="flex items-center gap-2">
+            <FlaskConical className="h-6 w-6 text-primary" />
+            <h1 className="text-lg font-semibold">Formulang Playground</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsDark(!isDark)}
+            >
+              {isDark ? (
+                <Sun className="h-4 w-4" />
+              ) : (
+                <Moon className="h-4 w-4" />
+              )}
+            </Button>
+            <Button variant="ghost" size="icon" asChild>
+              <a
+                href="https://github.com/bherbruck/formulang"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Github className="h-4 w-4" />
+              </a>
+            </Button>
+          </div>
+        </header>
+
+        <div className="flex flex-1 overflow-hidden">
+          <EditorPanel
+            code={code}
+            onCodeChange={setCode}
+            parseResult={parseResult}
+            isDark={isDark}
+            onSolveAll={handleSolveAll}
+          />
+          <ResultsPanel
+            parseResult={parseResult}
+            solveResults={solveResults}
+            loadingFormulas={loadingFormulas}
+            onSolve={handleSolve}
+            onSolveAll={handleSolveAll}
+            onRefresh={handleRefresh}
+            wasmReady={wasmReady}
+          />
+        </div>
       </div>
-    </div>
+    </TableConfigProvider>
   );
 }
 

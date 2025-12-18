@@ -1,12 +1,5 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
-
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import {
   Table,
   TableBody,
@@ -15,35 +8,26 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-interface ShadowPrice {
-  constraint: string;
-  value: number;
-  interpretation: string;
-}
-
-interface SensitivityAnalysisProps {
-  bindingConstraints: string[];
-  shadowPrices: ShadowPrice[];
-}
+import type { ShadowPrice } from "./types";
 
 type SortKey = "constraint" | "value";
 type SortDir = "asc" | "desc";
 
-export function SensitivityAnalysis({
-  shadowPrices,
-}: SensitivityAnalysisProps) {
-  const [open, setOpen] = useState(false);
+interface SensitivitySectionProps {
+  shadowPrices: ShadowPrice[];
+  colSpan: number;
+  className?: string;
+}
+
+export function SensitivitySection({ shadowPrices, colSpan, className = "" }: SensitivitySectionProps) {
+  const [isOpen, setIsOpen] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("value");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
-  // Filter shadow prices to only show those with non-zero values
-  const activeShadowPrices = shadowPrices.filter((sp) => sp.value > 0);
+  // Filter to only show non-zero shadow prices
+  const activePrices = shadowPrices.filter((sp) => sp.value > 0);
 
-  // Don't show if no active shadow prices
-  if (activeShadowPrices.length === 0) {
-    return null;
-  }
+  if (activePrices.length === 0) return null;
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -54,7 +38,7 @@ export function SensitivityAnalysis({
     }
   };
 
-  const sortedPrices = [...activeShadowPrices].sort((a, b) => {
+  const sortedPrices = [...activePrices].sort((a, b) => {
     const mult = sortDir === "asc" ? 1 : -1;
     if (sortKey === "constraint") {
       return mult * a.constraint.localeCompare(b.constraint);
@@ -63,27 +47,35 @@ export function SensitivityAnalysis({
   });
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <Card>
-        <CollapsibleTrigger asChild>
-          <CardHeader className="cursor-pointer hover:bg-muted/50 py-3">
-            <div className="flex items-center gap-2">
-              {open ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronRight className="h-4 w-4" />
-              )}
-              <CardTitle className="text-sm">Sensitivity Analysis</CardTitle>
-            </div>
-          </CardHeader>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <CardContent className="pt-0">
+    <>
+      {/* Section header - clickable to expand/collapse */}
+      <TableRow
+        className={`cursor-pointer hover:bg-muted/50 ${className}`}
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        <TableCell colSpan={colSpan} className="font-semibold text-xs uppercase tracking-wide text-muted-foreground py-2 bg-card border-t-2">
+          <div className="flex items-center gap-2">
+            {isOpen ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+            Sensitivity Analysis
+            <span className="font-normal normal-case">
+              ({activePrices.length} binding)
+            </span>
+          </div>
+        </TableCell>
+      </TableRow>
+
+      {isOpen && (
+        <TableRow className={className}>
+          <TableCell colSpan={colSpan} className="p-0">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead
-                    className="cursor-pointer hover:bg-muted/50"
+                    className="cursor-pointer hover:bg-muted/50 group"
                     onClick={() => toggleSort("constraint")}
                   >
                     <div className="flex items-center gap-1">
@@ -95,12 +87,12 @@ export function SensitivityAnalysis({
                           <ArrowDown className="h-3 w-3" />
                         )
                       ) : (
-                        <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
+                        <ArrowUpDown className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                       )}
                     </div>
                   </TableHead>
                   <TableHead
-                    className="cursor-pointer text-right hover:bg-muted/50"
+                    className="cursor-pointer text-right hover:bg-muted/50 group w-24"
                     onClick={() => toggleSort("value")}
                   >
                     <div className="flex items-center justify-end gap-1">
@@ -112,7 +104,7 @@ export function SensitivityAnalysis({
                           <ArrowDown className="h-3 w-3" />
                         )
                       ) : (
-                        <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
+                        <ArrowUpDown className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                       )}
                     </div>
                   </TableHead>
@@ -120,11 +112,9 @@ export function SensitivityAnalysis({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sortedPrices.map((sp, i) => (
-                  <TableRow key={i}>
-                    <TableCell className="font-medium">
-                      {sp.constraint}
-                    </TableCell>
+                {sortedPrices.map((sp) => (
+                  <TableRow key={sp.constraint}>
+                    <TableCell className="font-medium">{sp.constraint}</TableCell>
                     <TableCell className="text-right tabular-nums">
                       ${sp.value.toFixed(2)}
                     </TableCell>
@@ -135,9 +125,9 @@ export function SensitivityAnalysis({
                 ))}
               </TableBody>
             </Table>
-          </CardContent>
-        </CollapsibleContent>
-      </Card>
-    </Collapsible>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
   );
 }

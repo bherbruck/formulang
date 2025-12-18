@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { type OnMount, type BeforeMount } from "@monaco-editor/react";
 import { FileCode } from "lucide-react";
-import { registerFormulangWithWasm } from "formulang-monaco";
+import { registerFormulangWithWasm, THEME_DARK, THEME_LIGHT } from "formulang-monaco";
 import { get_completions, get_hover, validate } from "formulang-lang";
+import { registerFormulangThemes } from "@/lib/editor-theme";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -17,6 +18,7 @@ interface EditorPanelProps {
   onCodeChange: (code: string) => void;
   parseResult: ParseResult | null;
   isDark: boolean;
+  onSolveAll?: () => void;
 }
 
 export function EditorPanel({
@@ -24,11 +26,22 @@ export function EditorPanel({
   onCodeChange,
   parseResult,
   isDark,
+  onSolveAll,
 }: EditorPanelProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const modelRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const updateDiagnosticsRef = useRef<((model: any) => void) | null>(null);
+  const onSolveAllRef = useRef(onSolveAll);
+
+  useEffect(() => {
+    onSolveAllRef.current = onSolveAll;
+  }, [onSolveAll]);
+
+  const handleBeforeMount: BeforeMount = useCallback((monacoInstance) => {
+    // Register themes before editor initializes so theme prop works correctly
+    registerFormulangThemes(monacoInstance);
+  }, []);
 
   const handleEditorMount: OnMount = useCallback((editor, monacoInstance) => {
     modelRef.current = editor.getModel();
@@ -43,6 +56,16 @@ export function EditorPanel({
     if (modelRef.current) {
       updateDiagnostics(modelRef.current);
     }
+
+    // F5 to solve all formulas
+    editor.addAction({
+      id: "formulang-solve-all",
+      label: "Solve All Formulas",
+      keybindings: [monacoInstance.KeyCode.F5],
+      run: () => {
+        onSolveAllRef.current?.();
+      },
+    });
   }, []);
 
   useEffect(() => {
@@ -78,8 +101,9 @@ export function EditorPanel({
           defaultLanguage="formulang"
           value={code}
           onChange={(value) => onCodeChange(value || "")}
+          beforeMount={handleBeforeMount}
           onMount={handleEditorMount}
-          theme={isDark ? "vs-dark" : "light"}
+          theme={isDark ? THEME_DARK : THEME_LIGHT}
           options={{
             fontSize: 13,
             fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
