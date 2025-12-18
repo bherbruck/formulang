@@ -32,6 +32,13 @@ impl Parser {
         parser.parse_program()
     }
 
+    /// Parse with error recovery - returns successfully parsed items and collected errors
+    pub fn parse_resilient(source: &str) -> (Program, Vec<ParseError>) {
+        let tokens = crate::lexer::Lexer::tokenize(source);
+        let mut parser = Parser::new(tokens);
+        parser.parse_program_resilient()
+    }
+
     fn current(&self) -> Option<&Token> {
         self.tokens.get(self.pos)
     }
@@ -53,6 +60,136 @@ impl Parser {
         ) {
             self.advance();
         }
+    }
+
+    /// Skip tokens until we find the start of a new top-level item or EOF
+    fn skip_to_next_item(&mut self) {
+        let mut brace_depth = 0;
+
+        loop {
+            match self.peek_kind() {
+                TokenKind::Eof => break,
+                TokenKind::LBrace => {
+                    brace_depth += 1;
+                    self.advance();
+                }
+                TokenKind::RBrace => {
+                    if brace_depth > 0 {
+                        brace_depth -= 1;
+                    }
+                    self.advance();
+                    // If we closed all braces, we're at the end of an item
+                    if brace_depth == 0 {
+                        break;
+                    }
+                }
+                // Top-level keywords at brace depth 0 indicate new item
+                TokenKind::Nutrient | TokenKind::Ingredient | TokenKind::Formula
+                | TokenKind::Template | TokenKind::Import if brace_depth == 0 => {
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /// Parse program with error recovery - collects errors and continues
+    fn parse_program_resilient(&mut self) -> (Program, Vec<ParseError>) {
+        let mut items = Vec::new();
+        let mut errors = Vec::new();
+
+        loop {
+            self.skip_newlines_and_comments();
+
+            match self.peek_kind() {
+                TokenKind::Eof => break,
+                TokenKind::Import => {
+                    match self.parse_import() {
+                        Ok(item) => items.push(Item::Import(item)),
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
+                TokenKind::Nutrient => {
+                    match self.parse_nutrient() {
+                        Ok(item) => items.push(Item::Nutrient(item)),
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
+                TokenKind::Ingredient => {
+                    match self.parse_ingredient(false) {
+                        Ok(item) => items.push(Item::Ingredient(item)),
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
+                TokenKind::Formula => {
+                    match self.parse_formula(false) {
+                        Ok(item) => items.push(Item::Formula(item)),
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
+                TokenKind::Template => {
+                    self.advance(); // consume 'template'
+                    self.skip_newlines_and_comments();
+                    match self.peek_kind() {
+                        TokenKind::Ingredient => {
+                            match self.parse_ingredient(true) {
+                                Ok(item) => items.push(Item::Ingredient(item)),
+                                Err(e) => {
+                                    errors.push(e);
+                                    self.skip_to_next_item();
+                                }
+                            }
+                        }
+                        TokenKind::Formula => {
+                            match self.parse_formula(true) {
+                                Ok(item) => items.push(Item::Formula(item)),
+                                Err(e) => {
+                                    errors.push(e);
+                                    self.skip_to_next_item();
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Some(token) = self.current().cloned() {
+                                errors.push(ParseError::UnexpectedToken {
+                                    expected: "ingredient or formula after 'template'".to_string(),
+                                    found: format!("{:?}", token.kind),
+                                    span: token.span,
+                                });
+                            }
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
+                _ => {
+                    // Unknown token at top level - record error and skip
+                    if let Some(token) = self.current().cloned() {
+                        errors.push(ParseError::UnexpectedToken {
+                            expected: "import, nutrient, ingredient, formula, or template".to_string(),
+                            found: format!("{:?}", token.kind),
+                            span: token.span,
+                        });
+                    }
+                    self.advance(); // Skip the bad token
+                }
+            }
+        }
+
+        (Program { items }, errors)
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<Token, ParseError> {
@@ -82,12 +219,28 @@ impl Parser {
                 TokenKind::Eof => break,
                 TokenKind::Import => items.push(Item::Import(self.parse_import()?)),
                 TokenKind::Nutrient => items.push(Item::Nutrient(self.parse_nutrient()?)),
-                TokenKind::Ingredient => items.push(Item::Ingredient(self.parse_ingredient()?)),
-                TokenKind::Formula => items.push(Item::Formula(self.parse_formula()?)),
+                TokenKind::Ingredient => items.push(Item::Ingredient(self.parse_ingredient(false)?)),
+                TokenKind::Formula => items.push(Item::Formula(self.parse_formula(false)?)),
+                TokenKind::Template => {
+                    self.advance(); // consume 'template'
+                    self.skip_newlines_and_comments();
+                    match self.peek_kind() {
+                        TokenKind::Ingredient => items.push(Item::Ingredient(self.parse_ingredient(true)?)),
+                        TokenKind::Formula => items.push(Item::Formula(self.parse_formula(true)?)),
+                        _ => {
+                            let token = self.current().cloned().unwrap();
+                            return Err(ParseError::UnexpectedToken {
+                                expected: "ingredient or formula after 'template'".to_string(),
+                                found: format!("{:?}", token.kind),
+                                span: token.span,
+                            });
+                        }
+                    }
+                }
                 _ => {
                     let token = self.current().cloned().unwrap();
                     return Err(ParseError::UnexpectedToken {
-                        expected: "import, nutrient, ingredient, or formula".to_string(),
+                        expected: "import, nutrient, ingredient, formula, or template".to_string(),
                         found: format!("{:?}", token.kind),
                         span: token.span,
                     });
@@ -208,7 +361,7 @@ impl Parser {
         })
     }
 
-    fn parse_ingredient(&mut self) -> Result<Ingredient, ParseError> {
+    fn parse_ingredient(&mut self, is_template: bool) -> Result<Ingredient, ParseError> {
         let start = self.expect(TokenKind::Ingredient)?.span;
         let name = self.expect(TokenKind::Ident)?.text;
         self.expect(TokenKind::LBrace)?;
@@ -254,12 +407,13 @@ impl Parser {
         Ok(Ingredient {
             span: Span::new(start.start, end.end),
             name,
+            is_template,
             properties,
             nutrients,
         })
     }
 
-    fn parse_formula(&mut self) -> Result<Formula, ParseError> {
+    fn parse_formula(&mut self, is_template: bool) -> Result<Formula, ParseError> {
         let start = self.expect(TokenKind::Formula)?.span;
         let name = self.expect(TokenKind::Ident)?.text;
         self.expect(TokenKind::LBrace)?;
@@ -320,6 +474,7 @@ impl Parser {
         Ok(Formula {
             span: Span::new(start.start, end.end),
             name,
+            is_template,
             properties,
             nutrients,
             ingredients,
@@ -336,21 +491,29 @@ impl Parser {
                 let s = token.text.trim_matches('"').to_string();
                 (PropertyValue::String(s), token.span)
             }
-            TokenKind::Number => {
-                let token = self.advance().unwrap();
-                let n: f64 = token.text.parse().map_err(|_| {
-                    ParseError::InvalidNumber(token.text.clone())
-                })?;
-                (PropertyValue::Number(n), token.span)
-            }
-            TokenKind::Ident => {
-                let token = self.advance().unwrap();
-                (PropertyValue::Ident(token.text.clone()), token.span)
+            TokenKind::Number | TokenKind::Ident => {
+                // Parse as expression to support references and arithmetic
+                let expr = self.parse_expr()?;
+                let span = self.expr_span(&expr);
+
+                // Convert simple expressions to simpler PropertyValue variants
+                let value = match &expr {
+                    Expr::Number(n) => PropertyValue::Number(*n),
+                    Expr::Reference(r) if r.parts.len() == 1 => {
+                        if let ReferencePart::Ident(name) = &r.parts[0] {
+                            PropertyValue::Ident(name.clone())
+                        } else {
+                            PropertyValue::Expr(expr)
+                        }
+                    }
+                    _ => PropertyValue::Expr(expr),
+                };
+                (value, span)
             }
             _ => {
                 let token = self.current().cloned().unwrap();
                 return Err(ParseError::UnexpectedToken {
-                    expected: "string, number, or identifier".to_string(),
+                    expected: "string, number, or expression".to_string(),
                     found: format!("{:?}", token.kind),
                     span: token.span,
                 });
@@ -362,6 +525,20 @@ impl Parser {
             name: name_token.text,
             value,
         })
+    }
+
+    /// Get the span of an expression
+    fn expr_span(&self, expr: &Expr) -> Span {
+        match expr {
+            Expr::Number(_) => Span::new(0, 0), // Fallback, numbers don't store span
+            Expr::Reference(r) => r.span,
+            Expr::BinaryOp { left, right, .. } => {
+                let left_span = self.expr_span(left);
+                let right_span = self.expr_span(right);
+                Span::new(left_span.start, right_span.end)
+            }
+            Expr::Paren(inner) => self.expr_span(inner),
+        }
     }
 
     fn parse_nutrient_value(&mut self) -> Result<NutrientValue, ParseError> {
@@ -395,6 +572,17 @@ impl Parser {
         let start = self.current().map(|t| t.span).unwrap_or(Span::new(0, 0));
         let expr = self.parse_expr()?;
         let bounds = self.parse_bounds(false)?;
+
+        // Parse optional alias: `as identifier`
+        self.skip_newlines_and_comments();
+        let alias = if self.peek_kind() == TokenKind::As {
+            self.advance();
+            let ident = self.expect(TokenKind::Ident)?;
+            Some(ident.text.clone())
+        } else {
+            None
+        };
+
         let end = self.tokens.get(self.pos.saturating_sub(1))
             .map(|t| t.span.end)
             .unwrap_or(start.end);
@@ -403,6 +591,7 @@ impl Parser {
             span: Span::new(start.start, end),
             expr,
             bounds,
+            alias,
         })
     }
 
@@ -410,6 +599,17 @@ impl Parser {
         let start = self.current().map(|t| t.span).unwrap_or(Span::new(0, 0));
         let expr = self.parse_expr()?;
         let bounds = self.parse_bounds(true)?;
+
+        // Parse optional alias: `as identifier`
+        self.skip_newlines_and_comments();
+        let alias = if self.peek_kind() == TokenKind::As {
+            self.advance();
+            let ident = self.expect(TokenKind::Ident)?;
+            Some(ident.text.clone())
+        } else {
+            None
+        };
+
         let end = self.tokens.get(self.pos.saturating_sub(1))
             .map(|t| t.span.end)
             .unwrap_or(start.end);
@@ -418,6 +618,7 @@ impl Parser {
             span: Span::new(start.start, end),
             expr,
             bounds,
+            alias,
         })
     }
 
@@ -764,6 +965,122 @@ mod tests {
                 assert_eq!(f.name, "test");
                 assert_eq!(f.nutrients.len(), 1);
                 assert_eq!(f.ingredients.len(), 1);
+            }
+            _ => panic!("Expected formula"),
+        }
+    }
+
+    #[test]
+    fn test_resilient_parse_with_errors() {
+        // Test that valid items are parsed even when other items have errors
+        let source = r#"
+            nutrient protein {
+                name "Protein"
+                unit "%"
+            }
+
+            nutrient broken
+                name "This is broken - missing brace"
+                unit "%"
+            }
+
+            ingredient corn {
+                name "Corn"
+                cost 100
+                nuts {
+                    protein 8.0
+                }
+            }
+
+            formula test {
+                batch 1000
+                nuts {
+                    protein min 20
+                }
+                ings {
+                    corn
+                }
+            }
+        "#;
+
+        // Regular parse should fail
+        assert!(Parser::parse(source).is_err());
+
+        // Resilient parse should return valid items and errors
+        let (program, errors) = Parser::parse_resilient(source);
+
+        // Should have parsed the valid items
+        assert_eq!(program.items.len(), 3, "Should have 3 valid items (protein, corn, test)");
+
+        // Should have collected errors
+        assert!(!errors.is_empty(), "Should have at least one error");
+
+        // Check the valid items
+        let mut found_protein = false;
+        let mut found_corn = false;
+        let mut found_test = false;
+
+        for item in &program.items {
+            match item {
+                Item::Nutrient(n) if n.name == "protein" => found_protein = true,
+                Item::Ingredient(i) if i.name == "corn" => found_corn = true,
+                Item::Formula(f) if f.name == "test" => found_test = true,
+                _ => {}
+            }
+        }
+
+        assert!(found_protein, "Should have parsed protein nutrient");
+        assert!(found_corn, "Should have parsed corn ingredient");
+        assert!(found_test, "Should have parsed test formula");
+    }
+
+    #[test]
+    fn test_parse_constraint_alias() {
+        let source = r#"formula test {
+            batch_size 1000
+            nutrients {
+                calcium / phosphorus min 1.5 max 2.0 as ca_p_ratio
+                protein min 20 as min_protein
+            }
+            ingredients {
+                corn + soybean_meal min 50% as grains
+                corn max 70%
+            }
+        }"#;
+        let program = Parser::parse(source).unwrap();
+        match &program.items[0] {
+            Item::Formula(f) => {
+                // Check nutrient constraints
+                assert_eq!(f.nutrients.len(), 2);
+                assert_eq!(f.nutrients[0].alias, Some("ca_p_ratio".to_string()));
+                assert_eq!(f.nutrients[1].alias, Some("min_protein".to_string()));
+
+                // Check ingredient constraints
+                assert_eq!(f.ingredients.len(), 2);
+                assert_eq!(f.ingredients[0].alias, Some("grains".to_string()));
+                assert_eq!(f.ingredients[1].alias, None); // No alias
+            }
+            _ => panic!("Expected formula"),
+        }
+    }
+
+    #[test]
+    fn test_parse_constraint_alias_no_bounds() {
+        // Test alias without bounds (just naming an expression)
+        let source = r#"formula test {
+            batch_size 1000
+            nutrients {}
+            ingredients {
+                corn + soybean_meal + wheat as grains
+            }
+        }"#;
+        let program = Parser::parse(source).unwrap();
+        match &program.items[0] {
+            Item::Formula(f) => {
+                assert_eq!(f.ingredients.len(), 1);
+                assert_eq!(f.ingredients[0].alias, Some("grains".to_string()));
+                assert!(f.ingredients[0].bounds.min.is_none());
+                assert!(f.ingredients[0].bounds.max.is_none());
             }
             _ => panic!("Expected formula"),
         }

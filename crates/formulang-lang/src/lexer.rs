@@ -27,8 +27,10 @@ pub enum TokenKind {
     Ingredient,
     Formula,
     Import,
+    Template,
     Min,
     Max,
+    As,
 
     // Literals
     Ident,
@@ -254,8 +256,10 @@ impl<'a> Lexer<'a> {
             "ingredient" => TokenKind::Ingredient,
             "formula" => TokenKind::Formula,
             "import" => TokenKind::Import,
+            "template" => TokenKind::Template,
             "min" => TokenKind::Min,
             "max" => TokenKind::Max,
+            "as" => TokenKind::As,
             _ => TokenKind::Ident,
         };
         Token::new(kind, Span::new(start, self.pos), text)

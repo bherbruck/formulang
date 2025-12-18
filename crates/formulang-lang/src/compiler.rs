@@ -44,6 +44,10 @@ pub enum CompileError {
     ImportCycle(String),
     #[error("Cannot solve template formula '{0}'. Templates are for composition only.")]
     CannotSolveTemplate(String),
+    #[error("Invalid property reference: {0}")]
+    InvalidPropertyReference(String),
+    #[error("Division by zero in expression")]
+    DivisionByZero,
 }
 
 /// Compiled representation of a nutrient
@@ -61,6 +65,7 @@ pub struct CompiledIngredient {
     pub name: String,
     pub display_name: Option<String>,
     pub code: Option<String>,
+    pub is_template: bool,
     pub cost: f64,
     pub nutrients: HashMap<String, f64>,
 }
@@ -70,6 +75,7 @@ pub struct CompiledIngredient {
 pub struct CompiledFormula {
     pub name: String,
     pub display_name: Option<String>,
+    pub code: Option<String>,
     pub description: Option<String>,
     pub batch_size: f64,
     pub ingredients: Vec<String>,
@@ -205,8 +211,13 @@ impl Compiler {
                     );
                 }
                 Item::Ingredient(i) => {
-                    let cost = get_number_property(&i.properties, "cost")
-                        .ok_or_else(|| CompileError::MissingCost(i.name.clone()))?;
+                    // Templates don't require cost
+                    let cost = if i.is_template {
+                        self.resolve_number_property(&i.properties, "cost")?.unwrap_or(0.0)
+                    } else {
+                        self.resolve_number_property(&i.properties, "cost")?
+                            .ok_or_else(|| CompileError::MissingCost(i.name.clone()))?
+                    };
 
                     let mut nutrients = HashMap::new();
                     for nv in &i.nutrients {
@@ -232,6 +243,7 @@ impl Compiler {
                             name: i.name.clone(),
                             display_name: get_string_property(&i.properties, "name"),
                             code: get_string_property(&i.properties, "code"),
+                            is_template: i.is_template,
                             cost,
                             nutrients,
                         },
@@ -253,8 +265,106 @@ impl Compiler {
         self.symbols
             .formulas
             .get(name)
-            .map(|f| get_bool_property(&f.properties, "template").unwrap_or(false))
+            .map(|f| f.is_template || get_bool_property(&f.properties, "template").unwrap_or(false))
             .unwrap_or(false)
+    }
+
+    /// Check if an ingredient is marked as a template
+    pub fn is_ingredient_template(&self, name: &str) -> bool {
+        self.symbols
+            .ingredients
+            .get(name)
+            .map(|i| i.is_template)
+            .unwrap_or(false)
+    }
+
+    /// Resolve a property value that may be an expression
+    /// Supports references like `corn.cost` and arithmetic like `corn.cost * 2`
+    fn resolve_number_property(&self, properties: &[Property], name: &str) -> Result<Option<f64>, CompileError> {
+        for p in properties {
+            if property_matches(&p.name, name) {
+                return match &p.value {
+                    PropertyValue::Number(n) => Ok(Some(*n)),
+                    PropertyValue::Expr(expr) => Ok(Some(self.evaluate_property_expr(expr)?)),
+                    _ => Ok(None),
+                };
+            }
+        }
+        Ok(None)
+    }
+
+    /// Evaluate an expression to a number (for property values)
+    fn evaluate_property_expr(&self, expr: &Expr) -> Result<f64, CompileError> {
+        match expr {
+            Expr::Number(n) => Ok(*n),
+            Expr::Reference(r) => self.resolve_property_reference(r),
+            Expr::BinaryOp { left, op, right } => {
+                let left_val = self.evaluate_property_expr(left)?;
+                let right_val = self.evaluate_property_expr(right)?;
+                Ok(match op {
+                    BinaryOp::Add => left_val + right_val,
+                    BinaryOp::Sub => left_val - right_val,
+                    BinaryOp::Mul => left_val * right_val,
+                    BinaryOp::Div => {
+                        if right_val == 0.0 {
+                            return Err(CompileError::DivisionByZero);
+                        }
+                        left_val / right_val
+                    }
+                })
+            }
+            Expr::Paren(inner) => self.evaluate_property_expr(inner),
+        }
+    }
+
+    /// Resolve a property reference like `corn.cost` or `base_formula.batch`
+    fn resolve_property_reference(&self, r: &Reference) -> Result<f64, CompileError> {
+        if r.parts.len() != 2 {
+            return Err(CompileError::InvalidPropertyReference(
+                r.parts.iter().filter_map(|p| match p {
+                    ReferencePart::Ident(s) => Some(s.clone()),
+                    _ => None,
+                }).collect::<Vec<_>>().join(".")
+            ));
+        }
+
+        let item_name = match &r.parts[0] {
+            ReferencePart::Ident(name) => name,
+            _ => return Err(CompileError::InvalidPropertyReference("invalid reference".to_string())),
+        };
+        let prop_name = match &r.parts[1] {
+            ReferencePart::Ident(name) => name,
+            _ => return Err(CompileError::InvalidPropertyReference("invalid property".to_string())),
+        };
+
+        // Try to find in ingredients
+        if let Some(ing) = self.symbols.ingredients.get(item_name) {
+            match prop_name.as_str() {
+                "cost" => return Ok(ing.cost),
+                _ => return Err(CompileError::InvalidPropertyReference(
+                    format!("{}.{}", item_name, prop_name)
+                )),
+            }
+        }
+
+        // Try to find in formulas
+        if let Some(formula) = self.symbols.formulas.get(item_name) {
+            match prop_name.as_str() {
+                "batch" | "batch_size" => {
+                    // Use resolve_number_property to handle chained references
+                    return self.resolve_number_property(&formula.properties, "batch_size")?
+                        .or(self.resolve_number_property(&formula.properties, "batch")?)
+                        .ok_or_else(|| CompileError::InvalidPropertyReference(
+                            format!("{}.{}", item_name, prop_name)
+                        ));
+                }
+                _ => return Err(CompileError::InvalidPropertyReference(
+                    format!("{}.{}", item_name, prop_name)
+                )),
+            }
+        }
+
+        Err(CompileError::InvalidPropertyReference(format!("{}.{}", item_name, prop_name)))
     }
 
     /// Get list of all formula names
@@ -267,7 +377,7 @@ impl Compiler {
         self.symbols
             .formulas
             .iter()
-            .filter(|(_, f)| !get_bool_property(&f.properties, "template").unwrap_or(false))
+            .filter(|(_, f)| !f.is_template && !get_bool_property(&f.properties, "template").unwrap_or(false))
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -282,11 +392,12 @@ impl Compiler {
             .clone();
 
         // Check if this is a template formula (not solvable)
-        if get_bool_property(&formula.properties, "template").unwrap_or(false) {
+        if formula.is_template || get_bool_property(&formula.properties, "template").unwrap_or(false) {
             return Err(CompileError::CannotSolveTemplate(name.to_string()));
         }
 
-        let batch_size = get_number_property(&formula.properties, "batch_size")
+        let batch_size = self.resolve_number_property(&formula.properties, "batch_size")?
+            .or(self.resolve_number_property(&formula.properties, "batch")?)
             .ok_or_else(|| CompileError::MissingBatchSize(name.to_string()))?;
 
         // Resolve all nutrient constraints (including from base formulas)
@@ -377,6 +488,7 @@ impl Compiler {
         Ok(CompiledFormula {
             name: formula.name.clone(),
             display_name: get_string_property(&formula.properties, "name"),
+            code: get_string_property(&formula.properties, "code"),
             description: get_string_property(&formula.properties, "description"),
             batch_size,
             ingredients: ingredient_names,
@@ -724,11 +836,14 @@ impl Compiler {
     ) -> Result<(), CompileError> {
         // Check if this is a ratio constraint (e.g., calcium / phosphorus)
         if let Expr::BinaryOp { left, op: BinaryOp::Div, right } = &constraint.expr {
-            return self.add_ratio_constraint(lp, left, right, &constraint.bounds, ingredients, batch_size);
+            return self.add_ratio_constraint(lp, left, right, &constraint.bounds, &constraint.alias, ingredients, batch_size);
         }
 
         // For simple nutrient constraints
         let nutrient_name = self.expr_to_nutrient_name(&constraint.expr)?;
+
+        // Use alias if present, otherwise use nutrient name
+        let base_name = constraint.alias.as_ref().unwrap_or(&nutrient_name);
 
         // Build coefficient vector: each ingredient's contribution to this nutrient
         let coeffs: Vec<f64> = ingredients
@@ -754,7 +869,7 @@ impl Compiler {
             // Rearranged: sum(amount_i * nutrient_pct_i) >= required_pct * batch_size
             let rhs = min_bound.value * batch_size;
             lp.add_constraint(
-                format!("{}_min", nutrient_name),
+                format!("{}_min", base_name),
                 coeffs.clone(),
                 ConstraintOp::Ge,
                 rhs,
@@ -768,7 +883,7 @@ impl Compiler {
             }
             let rhs = max_bound.value * batch_size;
             lp.add_constraint(
-                format!("{}_max", nutrient_name),
+                format!("{}_max", base_name),
                 coeffs,
                 ConstraintOp::Le,
                 rhs,
@@ -788,11 +903,18 @@ impl Compiler {
         numerator: &Expr,
         denominator: &Expr,
         bounds: &Bounds,
+        alias: &Option<String>,
         ingredients: &[String],
         _batch_size: f64,
     ) -> Result<(), CompileError> {
         let num_name = self.expr_to_nutrient_name(numerator)?;
         let den_name = self.expr_to_nutrient_name(denominator)?;
+
+        // Use alias if present, otherwise derive from nutrient names
+        let base_name = alias
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{}/{}", num_name, den_name));
 
         // Get nutrient coefficients for numerator and denominator
         let num_coeffs: Vec<f64> = ingredients
@@ -828,7 +950,7 @@ impl Compiler {
                 .map(|(n, d)| n - r * d)
                 .collect();
             lp.add_constraint(
-                format!("{}/{}_min", num_name, den_name),
+                format!("{}_min", base_name),
                 coeffs,
                 ConstraintOp::Ge,
                 0.0,
@@ -844,7 +966,7 @@ impl Compiler {
                 .map(|(n, d)| n - r * d)
                 .collect();
             lp.add_constraint(
-                format!("{}/{}_max", num_name, den_name),
+                format!("{}_max", base_name),
                 coeffs,
                 ConstraintOp::Le,
                 0.0,
@@ -864,6 +986,13 @@ impl Compiler {
         // Build coefficient vector from expression
         let coeffs = self.expr_to_ingredient_coeffs(&constraint.expr, ingredients)?;
 
+        // Use alias if present, otherwise derive from expression
+        let base_name = constraint
+            .alias
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.expr_to_name(&constraint.expr));
+
         // Add min constraint if present
         if let Some(ref min_bound) = constraint.bounds.min {
             let rhs = if min_bound.is_percent {
@@ -872,7 +1001,7 @@ impl Compiler {
                 min_bound.value
             };
 
-            let constraint_name = format!("{}_min", self.expr_to_name(&constraint.expr));
+            let constraint_name = format!("{}_min", base_name);
             lp.add_constraint(constraint_name, coeffs.clone(), ConstraintOp::Ge, rhs);
         }
 
@@ -884,7 +1013,7 @@ impl Compiler {
                 max_bound.value
             };
 
-            let constraint_name = format!("{}_max", self.expr_to_name(&constraint.expr));
+            let constraint_name = format!("{}_max", base_name);
             lp.add_constraint(constraint_name, coeffs, ConstraintOp::Le, rhs);
         }
 
@@ -931,24 +1060,54 @@ impl Compiler {
                 }
             }
             Expr::BinaryOp { left, op, right } => {
-                let left_coeffs = self.expr_to_ingredient_coeffs(left, ingredients)?;
-                let right_coeffs = self.expr_to_ingredient_coeffs(right, ingredients)?;
-
                 match op {
                     BinaryOp::Add => {
+                        let left_coeffs = self.expr_to_ingredient_coeffs(left, ingredients)?;
+                        let right_coeffs = self.expr_to_ingredient_coeffs(right, ingredients)?;
                         for i in 0..coeffs.len() {
                             coeffs[i] = left_coeffs[i] + right_coeffs[i];
                         }
                     }
                     BinaryOp::Sub => {
+                        let left_coeffs = self.expr_to_ingredient_coeffs(left, ingredients)?;
+                        let right_coeffs = self.expr_to_ingredient_coeffs(right, ingredients)?;
                         for i in 0..coeffs.len() {
                             coeffs[i] = left_coeffs[i] - right_coeffs[i];
                         }
                     }
-                    _ => {
-                        return Err(CompileError::InvalidReference(
-                            "Only + and - allowed in ingredient expressions".to_string(),
-                        ));
+                    BinaryOp::Mul => {
+                        // Allow multiplication by a constant (scalar * expr or expr * scalar)
+                        if let Expr::Number(n) = left.as_ref() {
+                            let right_coeffs = self.expr_to_ingredient_coeffs(right, ingredients)?;
+                            for i in 0..coeffs.len() {
+                                coeffs[i] = n * right_coeffs[i];
+                            }
+                        } else if let Expr::Number(n) = right.as_ref() {
+                            let left_coeffs = self.expr_to_ingredient_coeffs(left, ingredients)?;
+                            for i in 0..coeffs.len() {
+                                coeffs[i] = left_coeffs[i] * n;
+                            }
+                        } else {
+                            return Err(CompileError::InvalidReference(
+                                "Multiplication requires one operand to be a number".to_string(),
+                            ));
+                        }
+                    }
+                    BinaryOp::Div => {
+                        // Allow division by a constant (expr / scalar)
+                        if let Expr::Number(n) = right.as_ref() {
+                            if *n == 0.0 {
+                                return Err(CompileError::DivisionByZero);
+                            }
+                            let left_coeffs = self.expr_to_ingredient_coeffs(left, ingredients)?;
+                            for i in 0..coeffs.len() {
+                                coeffs[i] = left_coeffs[i] / n;
+                            }
+                        } else {
+                            return Err(CompileError::InvalidReference(
+                                "Division must be by a constant number".to_string(),
+                            ));
+                        }
                     }
                 }
             }
@@ -1369,9 +1528,7 @@ mod tests {
                 nutrients { protein 45.0 }
             }
 
-            formula poultry_base {
-                template true
-
+            template formula poultry_base {
                 nutrients {
                     protein min 16
                 }

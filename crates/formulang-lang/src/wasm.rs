@@ -52,38 +52,64 @@ pub fn validate(source: &str) -> JsValue {
 /// Get semantic tokens for syntax highlighting
 #[wasm_bindgen]
 pub fn get_semantic_tokens(source: &str) -> Result<JsValue, JsValue> {
-    let tokens: Vec<SemanticToken> = Lexer::tokenize(source)
-        .into_iter()
-        .map(|t| {
-            let token_type = match t.kind {
-                TokenKind::Nutrient
-                | TokenKind::Ingredient
-                | TokenKind::Formula
-                | TokenKind::Import => "keyword",
-                TokenKind::Min | TokenKind::Max => "keyword",
-                TokenKind::Ident => "variable",
-                TokenKind::Number => "number",
-                TokenKind::String => "string",
-                TokenKind::Comment => "comment",
-                TokenKind::Colon | TokenKind::Comma => "delimiter",
-                TokenKind::LBrace | TokenKind::RBrace => "delimiter",
-                TokenKind::LBracket | TokenKind::RBracket => "delimiter",
-                TokenKind::LParen | TokenKind::RParen => "delimiter",
-                TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash => {
-                    "operator"
+    let raw_tokens = Lexer::tokenize(source);
+    let mut tokens: Vec<SemanticToken> = Vec::new();
+    let mut prev_was_as = false;
+
+    for i in 0..raw_tokens.len() {
+        let t = &raw_tokens[i];
+
+        // Look ahead to find next non-whitespace token
+        let next_significant = raw_tokens[i + 1..]
+            .iter()
+            .find(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Comment));
+
+        let token_type = match t.kind {
+            TokenKind::Nutrient
+            | TokenKind::Ingredient
+            | TokenKind::Formula
+            | TokenKind::Import
+            | TokenKind::Template => "keyword",
+            TokenKind::Min | TokenKind::Max | TokenKind::As => "keyword",
+            TokenKind::Ident => {
+                if prev_was_as {
+                    "type" // Highlight alias names distinctly (teal)
+                } else if next_significant.map(|t| t.kind) == Some(TokenKind::Dot) {
+                    "class" // Base identifier before dot (e.g., `someformula` in `someformula.ingredients`)
+                } else {
+                    "variable"
                 }
-                TokenKind::Percent => "operator",
-                TokenKind::Dot => "delimiter",
-                TokenKind::Newline => "whitespace",
-                TokenKind::Error | TokenKind::Eof => "error",
-            };
-            SemanticToken {
-                start: t.span.start,
-                end: t.span.end,
-                token_type: token_type.to_string(),
             }
-        })
-        .collect();
+            TokenKind::Number => "number",
+            TokenKind::String => "string",
+            TokenKind::Comment => "comment",
+            TokenKind::Colon | TokenKind::Comma => "delimiter",
+            TokenKind::LBrace | TokenKind::RBrace => "delimiter",
+            TokenKind::LBracket | TokenKind::RBracket => "delimiter",
+            TokenKind::LParen | TokenKind::RParen => "delimiter",
+            TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash => {
+                "operator"
+            }
+            TokenKind::Percent => "operator",
+            TokenKind::Dot => "delimiter",
+            TokenKind::Newline => "whitespace",
+            TokenKind::Error | TokenKind::Eof => "error",
+        };
+
+        // Track if we just saw `as` keyword (skip whitespace/newlines)
+        prev_was_as = match t.kind {
+            TokenKind::As => true,
+            TokenKind::Newline | TokenKind::Comment => prev_was_as, // Keep state
+            _ => false,
+        };
+
+        tokens.push(SemanticToken {
+            start: t.span.start,
+            end: t.span.end,
+            token_type: token_type.to_string(),
+        });
+    }
+
     serde_wasm_bindgen::to_value(&tokens).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
@@ -119,52 +145,59 @@ struct FormulaInfo {
 fn compute_formulas(source: &str) -> Vec<FormulaInfo> {
     let mut formulas = Vec::new();
 
-    if let Ok(program) = Parser::parse(source) {
-        for item in &program.items {
-            if let Item::Formula(f) = item {
-                let display_name = f.properties.iter().find_map(|p| {
-                    if p.name == "name" {
-                        match &p.value {
-                            PropertyValue::String(s) => Some(s.clone()),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                });
+    // Use resilient parsing to get valid formulas even when other items have errors
+    let (program, _errors) = Parser::parse_resilient(source);
 
-                let description = f.properties.iter().find_map(|p| {
-                    if p.name == "desc" || p.name == "description" {
-                        match &p.value {
-                            PropertyValue::String(s) => Some(s.clone()),
-                            _ => None,
-                        }
-                    } else {
-                        None
+    for item in &program.items {
+        if let Item::Formula(f) = item {
+            let display_name = f.properties.iter().find_map(|p| {
+                if p.name == "name" {
+                    match &p.value {
+                        PropertyValue::String(s) => Some(s.clone()),
+                        _ => None,
                     }
-                });
+                } else {
+                    None
+                }
+            });
 
-                let is_template = f.properties.iter().any(|p| {
-                    if p.name == "template" {
-                        match &p.value {
-                            PropertyValue::Ident(s) => {
-                                matches!(s.to_lowercase().as_str(), "true" | "yes" | "1")
-                            }
-                            PropertyValue::Number(n) => *n != 0.0,
-                            _ => false,
-                        }
-                    } else {
-                        false
+            let description = f.properties.iter().find_map(|p| {
+                if p.name == "desc" || p.name == "description" {
+                    match &p.value {
+                        PropertyValue::String(s) => Some(s.clone()),
+                        _ => None,
                     }
-                });
+                } else {
+                    None
+                }
+            });
 
-                formulas.push(FormulaInfo {
-                    name: f.name.clone(),
-                    display_name,
-                    description,
-                    is_template,
-                });
+            // Check both the `template` keyword and the legacy `template` property
+            let is_template = f.is_template || f.properties.iter().any(|p| {
+                if p.name == "template" {
+                    match &p.value {
+                        PropertyValue::Ident(s) => {
+                            matches!(s.to_lowercase().as_str(), "true" | "yes" | "1")
+                        }
+                        PropertyValue::Number(n) => *n != 0.0,
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            });
+
+            // Skip templates - they're only for composition, not solving
+            if is_template {
+                continue;
             }
+
+            formulas.push(FormulaInfo {
+                name: f.name.clone(),
+                display_name,
+                description,
+                is_template: false, // Always false now since we filter templates
+            });
         }
     }
 
@@ -344,8 +377,9 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
     let info = get_completion_info(source, position);
     let prefix_lower = info.typed_prefix.to_lowercase();
 
-    // Parse current document to get defined symbols
-    let program = Parser::parse(source).ok();
+    // Parse current document to get defined symbols (using resilient parsing)
+    let (program, _) = Parser::parse_resilient(source);
+    let program = Some(program);
 
     let mut completions = Vec::new();
 
@@ -355,9 +389,11 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
             add_completion(&mut completions, "nutrient", "keyword", "Define a nutrient",
                 "nutrient ${1:name} {\n  name \"${2:Display Name}\"\n  unit \"${3:%}\"\n}");
             add_completion(&mut completions, "ingredient", "keyword", "Define an ingredient",
-                "ingredient ${1:name} {\n  name \"${2:Display Name}\"\n  cost ${3:0}\n  nuts {\n    ${4}\n  }\n}");
+                "ingredient ${1:name} {\n  name \"${2:Display Name}\"\n  cost ${3:0}\n  nutrients {\n    ${4}\n  }\n}");
             add_completion(&mut completions, "formula", "keyword", "Define a formula",
-                "formula ${1:name} {\n  name \"${2:Display Name}\"\n  batch ${3:1000}\n  nuts {\n    ${4}\n  }\n  ings {\n    ${5}\n  }\n}");
+                "formula ${1:name} {\n  name \"${2:Display Name}\"\n  batch ${3:1000}\n  nutrients {\n    ${4}\n  }\n  ingredients {\n    ${5}\n  }\n}");
+            add_completion(&mut completions, "template", "keyword", "Define a template (for composition)",
+                "template ${1|formula,ingredient|} ${2:name} {\n  ${3}\n}");
             add_completion(&mut completions, "import", "keyword", "Import from another file",
                 "import \"${1:./file.fm}\"");
         }
@@ -375,13 +411,10 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
                 if is_formula {
                     add_completion(&mut completions, "nutrients", "property", "All nutrient constraints", "nutrients");
                     add_completion(&mut completions, "ingredients", "property", "All ingredient constraints", "ingredients");
-                    add_completion(&mut completions, "nuts", "property", "All nutrient constraints (short)", "nuts");
-                    add_completion(&mut completions, "ings", "property", "All ingredient constraints (short)", "ings");
                 }
 
                 if is_ingredient {
                     add_completion(&mut completions, "nutrients", "property", "All nutrient values", "nutrients");
-                    add_completion(&mut completions, "nuts", "property", "All nutrient values (short)", "nuts");
                 }
             }
         }
@@ -395,6 +428,11 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
                         if &f.name == name {
                             if block_type == "nutrients" {
                                 for nc in &f.nutrients {
+                                    // Suggest alias if present, otherwise the expression name
+                                    if let Some(ref alias) = nc.alias {
+                                        add_completion(&mut completions, alias, "variable",
+                                            "Constraint alias", alias);
+                                    }
                                     if let Some(nut_name) = get_expr_name(&nc.expr) {
                                         add_completion(&mut completions, &nut_name, "variable",
                                             &format!("{} constraint", nut_name), &nut_name);
@@ -402,6 +440,11 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
                                 }
                             } else if block_type == "ingredients" {
                                 for ic in &f.ingredients {
+                                    // Suggest alias if present, otherwise the expression name
+                                    if let Some(ref alias) = ic.alias {
+                                        add_completion(&mut completions, alias, "variable",
+                                            "Constraint alias", alias);
+                                    }
                                     if let Some(ing_name) = get_expr_name(&ic.expr) {
                                         add_completion(&mut completions, &ing_name, "variable",
                                             &format!("{} constraint", ing_name), &ing_name);
@@ -441,7 +484,10 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
         }
 
         CompletionContext::InFormulaNutrientsBlock => {
-            // In formula nutrients block - suggest nutrients and formulas for composition
+            // In formula nutrients block - suggest nutrients, formulas for composition, and constraint keywords
+            add_completion(&mut completions, "min", "keyword", "Set minimum bound", "min ${1:0}");
+            add_completion(&mut completions, "max", "keyword", "Set maximum bound", "max ${1:0}");
+            add_completion(&mut completions, "as", "keyword", "Name this constraint", "as ${1:alias_name}");
             if let Some(ref prog) = program {
                 for item in &prog.items {
                     match item {
@@ -459,7 +505,10 @@ fn compute_completions(source: &str, position: usize) -> Vec<Completion> {
         }
 
         CompletionContext::InFormulaIngredientsBlock => {
-            // In formula ingredients block - suggest ingredients and formulas
+            // In formula ingredients block - suggest ingredients, formulas, and constraint keywords
+            add_completion(&mut completions, "min", "keyword", "Set minimum bound", "min ${1:0}%");
+            add_completion(&mut completions, "max", "keyword", "Set maximum bound", "max ${1:0}%");
+            add_completion(&mut completions, "as", "keyword", "Name this constraint", "as ${1:alias_name}");
             if let Some(ref prog) = program {
                 for item in &prog.items {
                     match item {
@@ -562,21 +611,37 @@ struct Diagnostic {
 fn get_diagnostics(source: &str) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    // Parse and collect errors
-    match Parser::parse(source) {
-        Err(e) => {
-            diagnostics.push(Diagnostic {
-                start: 0,
-                end: source.len(),
-                severity: "error".to_string(),
-                message: e.to_string(),
-            });
-        }
-        Ok(program) => {
-            // Semantic validation
-            validate_program(&program, &mut diagnostics);
-        }
+    // Parse with error recovery - get all parse errors
+    let (program, parse_errors) = Parser::parse_resilient(source);
+
+    // Convert parse errors to diagnostics
+    for e in parse_errors {
+        let (start, end, message) = match &e {
+            crate::parser::ParseError::UnexpectedToken { span, expected, found } => {
+                // Use the actual token span for precise error location
+                (span.start, span.end.max(span.start + 1), format!("Expected {}, found {}", expected, found))
+            }
+            crate::parser::ParseError::UnexpectedEof => {
+                // For EOF errors, highlight the end of the file
+                let end = source.len();
+                let start = source.rfind(|c: char| !c.is_whitespace()).map(|i| i + 1).unwrap_or(0);
+                (start, end.max(start + 1), "Unexpected end of file".to_string())
+            }
+            crate::parser::ParseError::InvalidNumber(s) => {
+                // For invalid numbers, try to find where it might be
+                (0, source.len().min(20), format!("Invalid number: {}", s))
+            }
+        };
+        diagnostics.push(Diagnostic {
+            start,
+            end,
+            severity: "error".to_string(),
+            message,
+        });
     }
+
+    // Semantic validation on successfully parsed items
+    validate_program(&program, &mut diagnostics);
 
     diagnostics
 }
@@ -660,9 +725,9 @@ fn validate_program(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
                     }
                 }
 
-                // Check for missing cost
+                // Check for missing cost (skip for templates)
                 let has_cost = ing.properties.iter().any(|p| p.name == "cost");
-                if !has_cost {
+                if !has_cost && !ing.is_template {
                     diagnostics.push(Diagnostic {
                         start: ing.span.start,
                         end: ing.span.start + 10, // "ingredient"
@@ -721,11 +786,11 @@ fn validate_program(program: &Program, diagnostics: &mut Vec<Diagnostic>) {
                     check_ingredient_expr(&ic.expr, &nutrients, &ingredients, &formulas, diagnostics);
                 }
 
-                // Check for missing batch_size
+                // Check for missing batch_size (skip for templates)
                 let has_batch = formula.properties.iter().any(|p| {
                     p.name == "batch_size" || p.name == "batch"
                 });
-                if !has_batch {
+                if !has_batch && !formula.is_template {
                     diagnostics.push(Diagnostic {
                         start: formula.span.start,
                         end: formula.span.start + 7, // "formula"
@@ -899,34 +964,34 @@ fn compute_hover(source: &str, position: usize) -> Option<HoverInfo> {
         TokenKind::Import => "**import**\n\nImports definitions from another .fm file.".to_string(),
         TokenKind::Min => "**min**\n\nSets a minimum bound for a constraint.".to_string(),
         TokenKind::Max => "**max**\n\nSets a maximum bound for a constraint.".to_string(),
+        TokenKind::As => "**as**\n\nNames a constraint expression for readability and referencing.".to_string(),
         TokenKind::Ident => {
-            // Try to find this identifier in the parsed program
-            if let Ok(program) = Parser::parse(source) {
-                for item in &program.items {
-                    match item {
-                        Item::Nutrient(n) if n.name == token.text => {
-                            return Some(HoverInfo {
-                                contents: format!("**Nutrient** `{}`", n.name),
-                                start: token.span.start,
-                                end: token.span.end,
-                            });
-                        }
-                        Item::Ingredient(i) if i.name == token.text => {
-                            return Some(HoverInfo {
-                                contents: format!("**Ingredient** `{}`", i.name),
-                                start: token.span.start,
-                                end: token.span.end,
-                            });
-                        }
-                        Item::Formula(f) if f.name == token.text => {
-                            return Some(HoverInfo {
-                                contents: format!("**Formula** `{}`", f.name),
-                                start: token.span.start,
-                                end: token.span.end,
-                            });
-                        }
-                        _ => {}
+            // Try to find this identifier in the parsed program (using resilient parsing)
+            let (program, _) = Parser::parse_resilient(source);
+            for item in &program.items {
+                match item {
+                    Item::Nutrient(n) if n.name == token.text => {
+                        return Some(HoverInfo {
+                            contents: format!("**Nutrient** `{}`", n.name),
+                            start: token.span.start,
+                            end: token.span.end,
+                        });
                     }
+                    Item::Ingredient(i) if i.name == token.text => {
+                        return Some(HoverInfo {
+                            contents: format!("**Ingredient** `{}`", i.name),
+                            start: token.span.start,
+                            end: token.span.end,
+                        });
+                    }
+                    Item::Formula(f) if f.name == token.text => {
+                        return Some(HoverInfo {
+                            contents: format!("**Formula** `{}`", f.name),
+                            start: token.span.start,
+                            end: token.span.end,
+                        });
+                    }
+                    _ => {}
                 }
             }
             return None;
@@ -944,18 +1009,70 @@ fn compute_hover(source: &str, position: usize) -> Option<HoverInfo> {
 /// Solve a formula and return the solution as JSON
 #[wasm_bindgen]
 pub fn solve(source: &str, formula_name: &str) -> Result<JsValue, JsValue> {
-    // Parse
-    let program = Parser::parse(source).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    // Parse with error recovery - get valid items even if some have errors
+    let (program, _parse_errors) = Parser::parse_resilient(source);
 
-    // Compile
+    // Check if the target formula was successfully parsed
+    let formula_exists = program.items.iter().any(|item| {
+        matches!(item, Item::Formula(f) if f.name == formula_name)
+    });
+
+    if !formula_exists {
+        // Return error result if formula doesn't exist or failed to parse
+        let result = SolveResult {
+            status: "error".to_string(),
+            formula: formula_name.to_string(),
+            formula_name: None,
+            formula_code: None,
+            description: Some(format!("Formula '{}' not found or has syntax errors", formula_name)),
+            batch_size: 0.0,
+            total_cost: 0.0,
+            ingredients: vec![],
+            nutrients: vec![],
+            analysis: None,
+            violations: vec![],
+        };
+        return serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()));
+    }
+
+    // Compile - this may fail if dependencies are missing
     let mut compiler = Compiler::new();
-    compiler
-        .load(&program)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    if let Err(e) = compiler.load(&program) {
+        let result = SolveResult {
+            status: "error".to_string(),
+            formula: formula_name.to_string(),
+            formula_name: None,
+            formula_code: None,
+            description: Some(format!("Compilation error: {}", e)),
+            batch_size: 0.0,
+            total_cost: 0.0,
+            ingredients: vec![],
+            nutrients: vec![],
+            analysis: None,
+            violations: vec![],
+        };
+        return serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()));
+    }
 
-    let compiled = compiler
-        .compile_formula(formula_name)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let compiled = match compiler.compile_formula(formula_name) {
+        Ok(c) => c,
+        Err(e) => {
+            let result = SolveResult {
+                status: "error".to_string(),
+                formula: formula_name.to_string(),
+                formula_name: None,
+                formula_code: None,
+                description: Some(format!("Cannot solve formula: {}", e)),
+                batch_size: 0.0,
+                total_cost: 0.0,
+                ingredients: vec![],
+                nutrients: vec![],
+                analysis: None,
+                violations: vec![],
+            };
+            return serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()));
+        }
+    };
 
     // Solve
     let solver = Solver::new();
@@ -1042,7 +1159,9 @@ pub fn solve(source: &str, formula_name: &str) -> Result<JsValue, JsValue> {
             SolutionStatus::Unbounded => "unbounded".to_string(),
             SolutionStatus::Error => "error".to_string(),
         },
-        formula: compiled.display_name.unwrap_or(compiled.name),
+        formula: compiled.name,
+        formula_name: compiled.display_name,
+        formula_code: compiled.code,
         description: compiled.description,
         batch_size: compiled.batch_size,
         total_cost: if solution.objective_value.is_finite() {
@@ -1079,6 +1198,8 @@ pub fn solve(source: &str, formula_name: &str) -> Result<JsValue, JsValue> {
 struct SolveResult {
     status: String,
     formula: String,
+    formula_name: Option<String>,
+    formula_code: Option<String>,
     description: Option<String>,
     batch_size: f64,
     total_cost: f64,
@@ -1129,4 +1250,90 @@ struct ViolationResult {
     actual: f64,
     violation_amount: f64,
     description: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_completion_template_formula_alias() {
+        let source = r#"
+template formula ratios {
+  nutrients {
+    lysine / arginine min 0.1 as lysine_arginine
+    lysine / methionine min 0.1 as lysine_methionine
+  }
+  ingredients {}
+}
+
+formula test {
+  nutrients {
+    ratios.nutrients.
+  }
+  ingredients {}
+}
+"#;
+        // Position after "ratios.nutrients."
+        let line = "    ratios.nutrients.";
+        let pos = source.find(line).unwrap() + line.len();
+
+        let completions = compute_completions(source, pos);
+
+        // Should include both aliases
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"lysine_arginine"), "Should contain lysine_arginine alias, got: {:?}", labels);
+        assert!(labels.contains(&"lysine_methionine"), "Should contain lysine_methionine alias, got: {:?}", labels);
+    }
+
+    #[test]
+    fn test_parser_captures_alias_in_template() {
+        let source = r#"
+template formula ratios {
+  nutrients {
+    lysine / arginine   min 0.1 as lysine_arginine
+    lysine / methionine min 0.1 as lysine_methionine
+  }
+  ingredients {}
+}
+"#;
+        let (program, errors) = Parser::parse_resilient(source);
+        assert!(errors.is_empty(), "Parse errors: {:?}", errors);
+
+        // Find the ratios formula
+        let ratios = program.items.iter().find_map(|item| {
+            if let Item::Formula(f) = item {
+                if f.name == "ratios" { Some(f) } else { None }
+            } else { None }
+        }).expect("Should find ratios formula");
+
+        assert_eq!(ratios.nutrients.len(), 2, "Should have 2 nutrient constraints");
+
+        // Check aliases are captured
+        let aliases: Vec<Option<&str>> = ratios.nutrients.iter()
+            .map(|nc| nc.alias.as_deref())
+            .collect();
+
+        println!("Nutrient constraint aliases: {:?}", aliases);
+
+        assert_eq!(aliases[0], Some("lysine_arginine"), "First constraint should have lysine_arginine alias");
+        assert_eq!(aliases[1], Some("lysine_methionine"), "Second constraint should have lysine_methionine alias");
+    }
+
+    #[test]
+    fn test_completion_context_detection() {
+        let source = "ratios.nutrients.lys";
+        let pos = source.len();
+
+        let info = get_completion_info(source, pos);
+
+        match info.context {
+            CompletionContext::AfterBlockDot(name, block_type) => {
+                assert_eq!(name, "ratios");
+                assert_eq!(block_type, "nutrients");
+            }
+            _ => panic!("Expected AfterBlockDot context, got: {:?}", info.context),
+        }
+        assert_eq!(info.typed_prefix, "lys");
+    }
 }

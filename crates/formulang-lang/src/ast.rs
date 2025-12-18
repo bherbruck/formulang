@@ -44,6 +44,7 @@ pub struct Nutrient {
 pub struct Ingredient {
     pub span: Span,
     pub name: String,
+    pub is_template: bool,
     pub properties: Vec<Property>,
     pub nutrients: Vec<NutrientValue>,
 }
@@ -62,6 +63,7 @@ pub struct NutrientValue {
 pub struct Formula {
     pub span: Span,
     pub name: String,
+    pub is_template: bool,
     pub properties: Vec<Property>,
     pub nutrients: Vec<NutrientConstraint>,
     pub ingredients: Vec<IngredientConstraint>,
@@ -81,6 +83,8 @@ pub enum PropertyValue {
     String(String),
     Number(f64),
     Ident(String),
+    /// Expression value (for references like `corn.cost` or `corn.cost * 2`)
+    Expr(Expr),
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -89,6 +93,7 @@ pub struct NutrientConstraint {
     pub span: Span,
     pub expr: Expr,
     pub bounds: Bounds,
+    pub alias: Option<String>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -97,6 +102,7 @@ pub struct IngredientConstraint {
     pub span: Span,
     pub expr: Expr,
     pub bounds: Bounds,
+    pub alias: Option<String>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -39,16 +39,27 @@ export const languageConfiguration: Monaco.languages.LanguageConfiguration = {
  * Monarch tokenizer for Formulang syntax highlighting
  */
 export const monarchTokensProvider: Monaco.languages.IMonarchLanguage = {
-  defaultToken: 'invalid',
+  defaultToken: '',
   tokenPostfix: '.fm',
 
-  keywords: ['nutrient', 'ingredient', 'formula', 'import', 'min', 'max'],
+  // Declaration keywords - each gets a unique token
+  declarations: ['nutrient', 'ingredient', 'formula'],
 
-  typeKeywords: ['nutrients', 'nuts', 'ingredients', 'ings'],
+  // Modifiers
+  modifiers: ['template', 'import'],
 
-  operators: ['+', '-', '*', '/', '%', '.'],
+  // Constraint keywords
+  constraints: ['min', 'max', 'as'],
 
-  symbols: /[=><!~?:&|+\-*\/\^%]+/,
+  // Block keywords
+  blocks: ['nutrients', 'nuts', 'ingredients', 'ings'],
+
+  // Property names
+  properties: ['name', 'code', 'desc', 'description', 'cost', 'batch', 'batch_size', 'unit'],
+
+  operators: ['+', '-', '*', '/'],
+
+  symbols: /[+\-*\/]/,
 
   escapes: /\\(?:[abfnrtv\\"']|x[0-9A-Fa-f]{1,4}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})/,
 
@@ -58,32 +69,68 @@ export const monarchTokensProvider: Monaco.languages.IMonarchLanguage = {
       [/\/\/.*$/, 'comment'],
       [/\/\*/, 'comment', '@comment'],
 
-      // Keywords
-      [
-        /[a-zA-Z_]\w*/,
-        {
-          cases: {
-            '@keywords': 'keyword',
-            '@typeKeywords': 'type',
-            '@default': 'identifier',
-          },
-        },
-      ],
+      // Declaration keywords - transition to state that captures the declaration name
+      [/\b(template)\b/, 'keyword.modifier', '@templateDecl'],
+      [/\b(import)\b/, 'keyword.import'],
+      [/\b(nutrient)\b/, 'keyword.nutrient', '@declarationName'],
+      [/\b(ingredient)\b/, 'keyword.ingredient', '@declarationName'],
+      [/\b(formula)\b/, 'keyword.formula', '@declarationName'],
+
+      // 'as' keyword - transition to alias state to capture the alias name
+      [/\b(as)\b/, 'keyword.constraint', '@alias'],
+
+      // Constraint keywords
+      [/\b(min|max)\b/, 'keyword.constraint'],
+
+      // Block keywords
+      [/\b(nutrients|nuts|ingredients|ings)\b/, 'keyword.block'],
+
+      // Property names (when followed by value)
+      [/\b(name|code|desc|description|cost|batch|batch_size|unit)\b/, 'variable.property'],
+
+      // Percentage symbol after number
+      [/(\d+\.?\d*)(%?)/, ['number', 'number.percent']],
+
+      // Base identifier followed by dot (e.g., `formula.` in `formula.nutrients.protein`)
+      [/([a-zA-Z_]\w*)(\.)/,  ['class', 'delimiter.dot']],
+
+      // Regular identifiers
+      [/[a-zA-Z_]\w*/, 'variable'],
 
       // Whitespace
       { include: '@whitespace' },
 
       // Delimiters and operators
-      [/[{}()\[\]]/, '@brackets'],
-      [/,/, 'delimiter'],
+      [/[{}]/, 'delimiter.bracket'],
+      [/[()]/, 'delimiter.parenthesis'],
+      [/[\[\]]/, 'delimiter.square'],
       [/@symbols/, 'operator'],
-
-      // Numbers
-      [/\d+\.?\d*%?/, 'number'],
 
       // Strings
       [/"([^"\\]|\\.)*$/, 'string.invalid'],
       [/"/, 'string', '@string'],
+    ],
+
+    // State for capturing the type keyword after 'template' (e.g., 'formula' or 'ingredient')
+    templateDecl: [
+      [/[ \t]+/, ''], // Skip whitespace
+      [/\b(formula)\b/, 'keyword.formula', '@declarationName'],
+      [/\b(ingredient)\b/, 'keyword.ingredient', '@declarationName'],
+      ['', '', '@pop'], // Fallback - return to root
+    ],
+
+    // State for capturing declaration name after nutrient/ingredient/formula keywords
+    declarationName: [
+      [/[ \t]+/, ''], // Skip whitespace
+      [/[a-zA-Z_]\w*/, 'class', '@pop'], // Declaration name gets 'class' token (gold)
+      ['', '', '@pop'], // Fallback - return to root if no identifier
+    ],
+
+    // State for capturing alias name after 'as' keyword
+    alias: [
+      [/[ \t]+/, ''], // Skip whitespace
+      [/[a-zA-Z_]\w*/, 'type', '@pop'], // Alias name gets 'type' token (teal)
+      ['', '', '@pop'], // Fallback - return to root if no identifier
     ],
 
     comment: [
@@ -99,9 +146,123 @@ export const monarchTokensProvider: Monaco.languages.IMonarchLanguage = {
       [/"/, 'string', '@pop'],
     ],
 
-    whitespace: [[/[ \t\r\n]+/, 'white']],
+    whitespace: [[/[ \t\r\n]+/, '']],
   },
 };
+
+/**
+ * Token types used by the Formulang tokenizer.
+ * These are the semantic token names that themes should define rules for.
+ */
+export const TOKEN_TYPES = {
+  // Declaration keywords
+  KEYWORD_NUTRIENT: 'keyword.nutrient',
+  KEYWORD_INGREDIENT: 'keyword.ingredient',
+  KEYWORD_FORMULA: 'keyword.formula',
+  KEYWORD_MODIFIER: 'keyword.modifier',
+  KEYWORD_IMPORT: 'keyword.import',
+  KEYWORD_BLOCK: 'keyword.block',
+  KEYWORD_CONSTRAINT: 'keyword.constraint',
+
+  // Variables and properties
+  VARIABLE: 'variable',
+  VARIABLE_PROPERTY: 'variable.property',
+
+  // Types (alias names after 'as')
+  TYPE: 'type',
+
+  // Classes (base identifiers before dots, e.g., 'formula' in 'formula.nutrients')
+  CLASS: 'class',
+
+  // Literals
+  NUMBER: 'number',
+  NUMBER_PERCENT: 'number.percent',
+  STRING: 'string',
+
+  // Delimiters
+  DELIMITER_BRACKET: 'delimiter.bracket',
+  DELIMITER_DOT: 'delimiter.dot',
+  DELIMITER_PARENTHESIS: 'delimiter.parenthesis',
+  DELIMITER_SQUARE: 'delimiter.square',
+  OPERATOR: 'operator',
+
+  // Comments
+  COMMENT: 'comment',
+} as const;
+
+/**
+ * Create a Formulang theme for Monaco editor.
+ *
+ * @param isDark - Whether to create a dark theme
+ * @param colors - Color configuration matching your app's theme
+ */
+export function createFormulangTheme(
+  isDark: boolean,
+  colors: {
+    background: string;
+    foreground: string;
+    primary: string;
+    primaryDimmed: string;
+    secondary: string;
+    muted: string;
+    mutedForeground: string;
+    accent: string;
+    string: string;
+  }
+): Monaco.editor.IStandaloneThemeData {
+  return {
+    base: isDark ? 'vs-dark' : 'vs',
+    inherit: true,
+    rules: [
+      // Declarations - primary color
+      { token: TOKEN_TYPES.KEYWORD_NUTRIENT, foreground: colors.primary, fontStyle: 'bold' },
+      { token: TOKEN_TYPES.KEYWORD_INGREDIENT, foreground: colors.primary, fontStyle: 'bold' },
+      { token: TOKEN_TYPES.KEYWORD_FORMULA, foreground: colors.primary, fontStyle: 'bold' },
+      { token: TOKEN_TYPES.KEYWORD_MODIFIER, foreground: colors.primary, fontStyle: 'bold' },
+      { token: TOKEN_TYPES.KEYWORD_IMPORT, foreground: colors.primary, fontStyle: 'italic' },
+
+      // Block sections - primary dimmed
+      { token: TOKEN_TYPES.KEYWORD_BLOCK, foreground: colors.primaryDimmed },
+
+      // Logic - secondary
+      { token: TOKEN_TYPES.KEYWORD_CONSTRAINT, foreground: colors.secondary },
+      { token: TOKEN_TYPES.OPERATOR, foreground: colors.secondary },
+
+      // Identifiers - foreground
+      { token: TOKEN_TYPES.VARIABLE, foreground: colors.foreground },
+      { token: TOKEN_TYPES.VARIABLE_PROPERTY, foreground: colors.foreground },
+
+      // Types (alias names) - use accent color
+      { token: TOKEN_TYPES.TYPE, foreground: colors.accent },
+
+      // Classes (base identifiers before dots) - use primary dimmed
+      { token: TOKEN_TYPES.CLASS, foreground: colors.primaryDimmed },
+
+      // Numbers - accent/muted
+      { token: TOKEN_TYPES.NUMBER, foreground: colors.accent },
+      { token: TOKEN_TYPES.NUMBER_PERCENT, foreground: colors.accent },
+
+      // Strings - muted green
+      { token: TOKEN_TYPES.STRING, foreground: colors.string },
+
+      // Braces - muted foreground
+      { token: TOKEN_TYPES.DELIMITER_BRACKET, foreground: colors.mutedForeground },
+      { token: TOKEN_TYPES.DELIMITER_DOT, foreground: colors.mutedForeground },
+      { token: TOKEN_TYPES.DELIMITER_PARENTHESIS, foreground: colors.mutedForeground },
+      { token: TOKEN_TYPES.DELIMITER_SQUARE, foreground: colors.mutedForeground },
+
+      // Comments
+      { token: TOKEN_TYPES.COMMENT, foreground: colors.mutedForeground, fontStyle: 'italic' },
+    ],
+    colors: {
+      'editor.background': colors.background,
+      'editor.foreground': colors.foreground,
+      'editor.lineHighlightBackground': isDark ? '#ffffff08' : '#00000008',
+      'editorLineNumber.foreground': colors.mutedForeground,
+      'editorLineNumber.activeForeground': colors.foreground,
+    },
+  };
+}
 
 /**
  * Static completion items for Formulang keywords
@@ -119,7 +280,7 @@ const completionItems: Monaco.languages.CompletionItem[] = [
     label: 'ingredient',
     kind: 14,
     insertText:
-      'ingredient ${1:name} {\n\tname "${2:Display Name}"\n\tcode "${3}"\n\tcost ${4:0}\n\tnuts {\n\t\t${5:nutrient} ${6:0}\n\t}\n}',
+      'ingredient ${1:name} {\n\tname "${2:Display Name}"\n\tcode "${3}"\n\tcost ${4:0}\n\tnutrients {\n\t\t${5:nutrient} ${6:0}\n\t}\n}',
     insertTextRules: 4,
     documentation: 'Define an ingredient with cost and nutrient composition',
     detail: 'Ingredient definition',
@@ -128,7 +289,7 @@ const completionItems: Monaco.languages.CompletionItem[] = [
     label: 'formula',
     kind: 14,
     insertText:
-      'formula ${1:name} {\n\tname "${2:Display Name}"\n\tcode "${3}"\n\tdesc "${4}"\n\tbatch ${5:1000}\n\n\tnuts {\n\t\t${6:nutrient} min ${7:0}\n\t}\n\n\tings {\n\t\t${8:ingredient}\n\t}\n}',
+      'formula ${1:name} {\n\tname "${2:Display Name}"\n\tcode "${3}"\n\tdesc "${4}"\n\tbatch ${5:1000}\n\n\tnutrients {\n\t\t${6:nutrient} min ${7:0}\n\t}\n\n\tingredients {\n\t\t${8:ingredient}\n\t}\n}',
     insertTextRules: 4,
     documentation: 'Define a formula with nutrient requirements and ingredient constraints',
     detail: 'Formula definition',
@@ -140,6 +301,22 @@ const completionItems: Monaco.languages.CompletionItem[] = [
     insertTextRules: 4,
     documentation: 'Import definitions from another file',
     detail: 'Import statement',
+  },
+  {
+    label: 'template formula',
+    kind: 14,
+    insertText: 'template formula ${1:name} {\n\tnutrients {\n\t\t${2}\n\t}\n\tingredients {\n\t\t${3}\n\t}\n}',
+    insertTextRules: 4,
+    documentation: 'Define a template formula for composition (not solvable)',
+    detail: 'Template formula',
+  },
+  {
+    label: 'template ingredient',
+    kind: 14,
+    insertText: 'template ingredient ${1:name} {\n\tnutrients {\n\t\t${2}\n\t}\n}',
+    insertTextRules: 4,
+    documentation: 'Define a template ingredient for composition (no cost required)',
+    detail: 'Template ingredient',
   },
   {
     label: 'min',
@@ -158,36 +335,48 @@ const completionItems: Monaco.languages.CompletionItem[] = [
     detail: 'Maximum bound',
   },
   {
+    label: 'as',
+    kind: 14,
+    insertText: 'as ${1:alias_name}',
+    insertTextRules: 4,
+    documentation: 'Name a constraint expression for referencing',
+    detail: 'Constraint alias',
+  },
+  {
     label: 'nutrients',
     kind: 14,
-    insertText: 'nuts {\n\t${1}\n}',
+    insertText: 'nutrients {\n\t${1}\n}',
     insertTextRules: 4,
-    documentation: 'Nutrient constraints block (alias: nuts)',
+    documentation: 'Nutrient constraints block',
     detail: 'Nutrients block',
+    sortText: '0nutrients', // Sort before 'nuts'
+  },
+  {
+    label: 'ingredients',
+    kind: 14,
+    insertText: 'ingredients {\n\t${1}\n}',
+    insertTextRules: 4,
+    documentation: 'Ingredient constraints block',
+    detail: 'Ingredients block',
+    sortText: '0ingredients', // Sort before 'ings'
   },
   {
     label: 'nuts',
     kind: 14,
     insertText: 'nuts {\n\t${1}\n}',
     insertTextRules: 4,
-    documentation: 'Nutrient constraints block (short for nutrients)',
-    detail: 'Nutrients block',
-  },
-  {
-    label: 'ingredients',
-    kind: 14,
-    insertText: 'ings {\n\t${1}\n}',
-    insertTextRules: 4,
-    documentation: 'Ingredient constraints block (alias: ings)',
-    detail: 'Ingredients block',
+    documentation: 'Nutrient constraints block (short form)',
+    detail: 'Nutrients block (alias)',
+    sortText: '1nuts',
   },
   {
     label: 'ings',
     kind: 14,
     insertText: 'ings {\n\t${1}\n}',
     insertTextRules: 4,
-    documentation: 'Ingredient constraints block (short for ingredients)',
-    detail: 'Ingredients block',
+    documentation: 'Ingredient constraints block (short form)',
+    detail: 'Ingredients block (alias)',
+    sortText: '1ings',
   },
 ] as Monaco.languages.CompletionItem[];
 
@@ -230,6 +419,9 @@ export function setWasmFunctions(fns: WasmFunctions): void {
 
 /**
  * Completion provider for Formulang
+ *
+ * Uses WASM-powered completions as the source of truth when available.
+ * Only falls back to static completions when WASM isn't initialized.
  */
 export function createCompletionProvider(): Monaco.languages.CompletionItemProvider {
   return {
@@ -243,13 +435,7 @@ export function createCompletionProvider(): Monaco.languages.CompletionItemProvi
         endColumn: word.endColumn,
       };
 
-      // Start with static completions
-      const suggestions = completionItems.map((item) => ({
-        ...item,
-        range,
-      }));
-
-      // Add dynamic completions from WASM if available
+      // Use WASM completions as source of truth when available
       if (wasmFunctions) {
         try {
           const source = model.getValue();
@@ -257,31 +443,27 @@ export function createCompletionProvider(): Monaco.languages.CompletionItemProvi
           const wasmCompletions = wasmFunctions.get_completions(source, offset);
 
           if (Array.isArray(wasmCompletions)) {
-            for (const c of wasmCompletions) {
-              // Skip if already in static completions
-              if (suggestions.some(s => s.label === c.label)) continue;
-
-              suggestions.push({
-                label: c.label,
-                kind: c.kind === 'keyword' ? 14 : 5, // Keyword or Variable
-                insertText: c.insert_text,
-                insertTextRules: c.insert_text.includes('$') ? 4 : 0,
-                documentation: c.detail || undefined,
-                detail: c.kind,
-                range: {
-                  startLineNumber: range.startLineNumber,
-                  endLineNumber: range.endLineNumber,
-                  startColumn: range.startColumn,
-                  endColumn: range.endColumn,
-                },
-              });
-            }
+            const suggestions = wasmCompletions.map((c) => ({
+              label: c.label,
+              kind: c.kind === 'keyword' ? 14 : c.kind === 'property' ? 10 : 5,
+              insertText: c.insert_text,
+              insertTextRules: c.insert_text.includes('$') ? 4 : 0,
+              documentation: c.detail || undefined,
+              detail: c.kind,
+              range,
+            }));
+            return { suggestions };
           }
         } catch (e) {
           console.error('WASM completion error:', e);
         }
       }
 
+      // Fallback to static completions only when WASM unavailable
+      const suggestions = completionItems.map((item) => ({
+        ...item,
+        range,
+      }));
       return { suggestions };
     },
   };
@@ -303,6 +485,7 @@ export function createHoverProvider(): Monaco.languages.HoverProvider {
     nuts: 'Block containing nutrient constraints (short for nutrients).',
     ingredients: 'Block containing ingredient constraints (alias: ings).',
     ings: 'Block containing ingredient constraints (short for ingredients).',
+    as: 'Names a constraint expression for referencing. Example: `protein min 18 as min_protein`',
     batch_size: 'The total weight of the formula batch (alias: batch).',
     batch: 'The total weight of the formula batch (short for batch_size).',
     description: 'Description text (alias: desc).',
@@ -402,6 +585,9 @@ export function createDiagnosticsUpdater(monaco: typeof Monaco) {
 /**
  * Register the Formulang language with Monaco
  */
+export const THEME_DARK = 'formulang-dark';
+export const THEME_LIGHT = 'formulang-light';
+
 export function registerFormulang(monaco: typeof Monaco): void {
   // Register the language
   monaco.languages.register({
