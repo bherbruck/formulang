@@ -21,7 +21,7 @@ import { ColumnSettings } from "./column-settings";
 import { FormulaRow } from "./formula-row";
 import type { SolveResult } from "./types";
 
-type FormulaSortKey = "id" | "name" | "code" | "status" | "batch" | "cost" | "costPerKg";
+type FormulaSortKey = "id" | "name" | "code" | "status" | "batch" | "cost";
 type SortDir = "asc" | "desc" | null;
 
 interface FormulasSectionProps {
@@ -65,8 +65,8 @@ export function FormulasSection({
   // Ensure at least one identifier column is shown (default to 'id')
   const identifierCols = visibleIdentifiers.length > 0 ? visibleIdentifiers : ["id" as ColumnId];
 
-  // Count visible columns: chevron + identifiers + status + batch + cost + cost/kg + actions
-  const colCount = 1 + identifierCols.length + 4 + 1;
+  // Count visible columns: chevron + identifiers + status + batch + cost + actions
+  const colCount = 1 + identifierCols.length + 4;
 
   const handleSolve = (e: React.MouseEvent, formulaName: string) => {
     e.stopPropagation();
@@ -110,11 +110,6 @@ export function FormulasSection({
         const costA = resultA?.totalCost ?? -1;
         const costB = resultB?.totalCost ?? -1;
         return mult * (costA - costB);
-      }
-      case "costPerKg": {
-        const cpkA = resultA && resultA.batchSize > 0 ? resultA.totalCost / resultA.batchSize : -1;
-        const cpkB = resultB && resultB.batchSize > 0 ? resultB.totalCost / resultB.batchSize : -1;
-        return mult * (cpkA - cpkB);
       }
       default:
         return 0;
@@ -165,14 +160,6 @@ export function FormulasSection({
           direction={sortDir}
         >
           Cost
-        </SortableHeader>
-        <SortableHeader
-          onClick={() => onToggleSort("costPerKg")}
-          className="text-right bg-background"
-          isActive={sortKey === "costPerKg"}
-          direction={sortDir}
-        >
-          Cost/kg
         </SortableHeader>
         <TableHead className="w-20 text-right bg-background">
           <div className="flex items-center justify-end gap-1">

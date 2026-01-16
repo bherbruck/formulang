@@ -12,9 +12,9 @@ import {
 import { SortableHeader } from "./sortable-header";
 import type { Ingredient } from "./types";
 
-const INGREDIENT_COLUMNS: ColumnId[] = ["id", "name", "code", "amount", "percentage", "unitCost", "cost", "costPercentage"];
+const INGREDIENT_COLUMNS: ColumnId[] = ["id", "name", "code", "amount", "percentage", "cost"];
 
-type IngSortKey = "id" | "name" | "code" | "amount" | "percentage" | "cost" | "costPercentage" | "unitCost";
+type IngSortKey = "id" | "name" | "code" | "amount" | "percentage" | "cost";
 
 interface IngredientsSectionProps {
   ingredients: Ingredient[];
@@ -81,30 +81,10 @@ export function IngredientsSection({ ingredients, colSpan, className = "" }: Ing
             {ing.percentage.toFixed(2)}%
           </TableCell>
         );
-      case "unitCost":
-        return (
-          <TableCell key={col} className="text-right tabular-nums">
-            ${ing.unitCost.toFixed(4)}
-          </TableCell>
-        );
       case "cost":
         return (
           <TableCell key={col} className="text-right tabular-nums">
             ${ing.cost.toFixed(2)}
-          </TableCell>
-        );
-      case "costPercentage":
-        return (
-          <TableCell key={col} className="text-right">
-            <div className="flex items-center justify-end gap-2">
-              <span className="tabular-nums">{ing.costPercentage.toFixed(1)}%</span>
-              <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full bg-primary transition-all"
-                  style={{ width: `${ing.costPercentage}%` }}
-                />
-              </div>
-            </div>
           </TableCell>
         );
       default:
@@ -127,7 +107,7 @@ export function IngredientsSection({ ingredients, colSpan, className = "" }: Ing
       <TableRow className={className}>
         <TableHead className="w-8 bg-card" /> {/* Spacer to align with chevron column */}
         {colsToShow.map((col) => {
-          const isNumeric = ["amount", "percentage", "unitCost", "cost", "costPercentage"].includes(col);
+          const isNumeric = ["amount", "percentage", "cost"].includes(col);
           const cellClassName = isNumeric ? "text-right" : "";
           return (
             <SortableHeader

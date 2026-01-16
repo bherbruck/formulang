@@ -13,8 +13,6 @@ export interface TableColumnConfig {
   showAmount: boolean;
   showPercentage: boolean;
   showCost: boolean;
-  showCostPercentage: boolean;
-  showUnitCost: boolean;
   // Nutrient columns
   showValue: boolean;
   showUnit: boolean;
@@ -34,9 +32,7 @@ export const ALL_COLUMNS = [
   "code",
   "amount",
   "percentage",
-  "unitCost",
   "cost",
-  "costPercentage",
   "value",
   "unit",
 ] as const;
@@ -45,7 +41,7 @@ export type ColumnId = typeof ALL_COLUMNS[number];
 
 // Column groupings
 export const IDENTIFIER_COLUMNS: ColumnId[] = ["id", "name", "code"];
-export const INGREDIENT_COLUMNS: ColumnId[] = ["amount", "percentage", "unitCost", "cost", "costPercentage"];
+export const INGREDIENT_COLUMNS: ColumnId[] = ["amount", "percentage", "cost"];
 export const NUTRIENT_COLUMNS: ColumnId[] = ["value", "unit"];
 
 // Column display names
@@ -53,11 +49,9 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   id: "ID",
   name: "Name",
   code: "Code",
-  amount: "Amount (kg)",
+  amount: "Amount",
   percentage: "Percentage",
-  unitCost: "Unit Cost",
   cost: "Cost",
-  costPercentage: "Cost %",
   value: "Value",
   unit: "Unit",
 };
@@ -69,9 +63,7 @@ export const COLUMN_CONFIG_KEY: Record<ColumnId, keyof TableColumnConfig> = {
   code: "showCode",
   amount: "showAmount",
   percentage: "showPercentage",
-  unitCost: "showUnitCost",
   cost: "showCost",
-  costPercentage: "showCostPercentage",
   value: "showValue",
   unit: "showUnit",
 };
@@ -83,8 +75,6 @@ const defaultConfig: TableColumnConfig = {
   showAmount: true,
   showPercentage: true,
   showCost: true,
-  showCostPercentage: true,
-  showUnitCost: false,
   showValue: true,
   showUnit: true,
   columnOrder: [...ALL_COLUMNS],

@@ -5,18 +5,9 @@ import { registerFormulangWithWasm, THEME_DARK, THEME_LIGHT } from "formulang-mo
 import { get_completions, get_hover, validate } from "formulang-lang";
 import { registerFormulangThemes } from "@/lib/editor-theme";
 
-import { Badge } from "@/components/ui/badge";
-
-interface ParseResult {
-  nutrients: number;
-  ingredients: number;
-  formulas: string[];
-}
-
 interface EditorPanelProps {
   code: string;
   onCodeChange: (code: string) => void;
-  parseResult: ParseResult | null;
   isDark: boolean;
   onSolveAll?: () => void;
 }
@@ -24,7 +15,6 @@ interface EditorPanelProps {
 export function EditorPanel({
   code,
   onCodeChange,
-  parseResult,
   isDark,
   onSolveAll,
 }: EditorPanelProps) {
@@ -76,24 +66,11 @@ export function EditorPanel({
 
   return (
     <div className="flex w-1/2 flex-col border-r">
-      <div className="flex h-10 items-center justify-between border-b bg-muted/50 px-4">
+      <div className="flex h-10 items-center border-b bg-muted/50 px-4">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <FileCode className="h-4 w-4" />
           <span>formula.fm</span>
         </div>
-        {parseResult && (
-          <div className="flex items-center gap-1.5">
-            <Badge variant="secondary" className="text-xs">
-              {parseResult.nutrients} nutrients
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              {parseResult.ingredients} ingredients
-            </Badge>
-            <Badge variant="secondary" className="text-xs">
-              {parseResult.formulas.length} formulas
-            </Badge>
-          </div>
-        )}
       </div>
       <div className="flex-1">
         <Editor

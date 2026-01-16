@@ -99,7 +99,6 @@ export function FormulaRow({
           {result && result.status !== "error" ? (
             <>
               {result.batchSize.toLocaleString()}
-              <span className="text-muted-foreground"> kg</span>
             </>
           ) : (
             <span className="text-muted-foreground">—</span>
@@ -110,13 +109,6 @@ export function FormulaRow({
             <span className="text-primary font-medium">
               ${result.totalCost.toFixed(2)}
             </span>
-          ) : (
-            <span className="text-muted-foreground">—</span>
-          )}
-        </TableCell>
-        <TableCell className="py-2 text-right tabular-nums">
-          {result && result.status !== "error" && result.batchSize > 0 ? (
-            `$${(result.totalCost / result.batchSize).toFixed(2)}`
           ) : (
             <span className="text-muted-foreground">—</span>
           )}

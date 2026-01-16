@@ -388,7 +388,6 @@ function App() {
           <EditorPanel
             code={code}
             onCodeChange={setCode}
-            parseResult={parseResult}
             isDark={isDark}
             onSolveAll={handleSolveAll}
           />
