@@ -2,9 +2,9 @@
 
 A domain-specific language for least-cost feed formulation. Define nutrients, ingredients, and formula constraints in a readable syntax, then solve for the optimal mix using linear programming.
 
-![Formulang Playground](docs/media/screenshot.png)
-
 **[Try the Live Demo](https://bherbruck.github.io/formulang/)**
+
+![Formulang Playground](docs/media/screenshot.png)
 
 ## Features
 
@@ -19,7 +19,7 @@ A domain-specific language for least-cost feed formulation. Define nutrients, in
 
 ### Nutrients
 
-```
+```hcl
 nutrient protein {
   code "02"
   name "Crude Protein"
@@ -41,7 +41,7 @@ nutrient methionine {}
 
 Define ingredients and reference values from other ingredients:
 
-```
+```hcl
 ingredient corn {
   name "Yellow Corn"
   cost 0.15
@@ -77,7 +77,7 @@ ingredient soybean_meal {
 
 Reference nutrients and ingredients from other formulas:
 
-```
+```hcl
 formula con_1001 {
   code "1001"
   name "CON Starter"
@@ -135,7 +135,7 @@ formula con_1003 {
 
 Constrain nutrient ratios with named aliases:
 
-```
+```hcl
 formula starter {
   nutrients {
     protein min 20 max 24
@@ -160,7 +160,7 @@ formula grower {
 
 Templates are just definitions that aren't solved - useful for shared base configurations:
 
-```
+```hcl
 template formula base {
   batch 1000
 }
@@ -183,7 +183,7 @@ formula starter {
 
 Templates work the same way for ingredients:
 
-```
+```hcl
 template ingredient grain_base {
   nutrients {
     fiber 2.5
