@@ -1,6 +1,6 @@
 # Formulang
 
-A domain-specific language (DSL) for least-cost feed formulation. Formulang lets you define nutrients, ingredients, and formula constraints in a readable syntax, then solves for the optimal (lowest cost) mix using linear programming.
+A domain-specific language for least-cost feed formulation. Define nutrients, ingredients, and formula constraints in a readable syntax, then solve for the optimal mix using linear programming.
 
 ![Formulang Playground](docs/media/screenshot.png)
 
@@ -8,134 +8,178 @@ A domain-specific language (DSL) for least-cost feed formulation. Formulang lets
 
 ## Features
 
-- **Declarative DSL** - Define nutrients, ingredients, and formulas in a clean, readable syntax
-- **Least-cost optimization** - Solves for the minimum cost formulation that meets all constraints
-- **Constraint flexibility** - Set min/max bounds on nutrients and ingredients (absolute or percentage)
-- **Ingredient groups** - Constrain combinations of ingredients together
-- **Sensitivity analysis** - Understand shadow prices and binding constraints
-- **Multiple targets** - Rust CLI, WebAssembly, and browser playground
+- **Least-cost optimization** - Solves for the minimum cost formulation meeting all constraints
+- **Templates** - Reuse definitions across ingredients and formulas
+- **Reference expressions** - Access values from other definitions with dot notation
+- **Computed values** - Use expressions like `corn.cost * 2`
+- **Nutrient ratios** - Constrain ratios like `lysine / methionine min 0.1`
+- **Ingredient groups** - Constrain combinations like `corn + soybean_meal max 75%`
+- **Inheritance** - Spread nutrients and ingredients from other formulas
 
-## Installation
-
-### CLI (Rust)
-
-```bash
-cargo install --path crates/formulang-cli
-```
-
-### WebAssembly (npm)
-
-```bash
-# Build the WASM package
-cd crates/formulang-lang
-wasm-pack build --target web --features wasm
-```
-
-## Language Syntax
+## Examples
 
 ### Nutrients
 
-Define the nutritional parameters you want to track:
-
 ```
 nutrient protein {
+  code "02"
   name "Crude Protein"
   unit "%"
 }
 
 nutrient energy {
+  code "01"
   name "Metabolizable Energy"
   unit "kcal/kg"
 }
+
+// Minimal definitions work too
+nutrient lysine {}
+nutrient methionine {}
 ```
 
-### Ingredients
+### Ingredients with Templates
 
-Define available ingredients with their costs and nutrient compositions:
+Define reusable templates and reference their values:
 
 ```
+template ingredient corn_base {
+  cost 0.15
+  nutrients {
+    protein 7.5
+    energy 3350
+    fiber 2.2
+  }
+}
+
 ingredient corn {
   name "Yellow Corn"
-  cost 150
+  cost corn_base.cost
   nutrients {
-    protein 8.5
-    energy 3350
+    corn_base.nutrients
   }
 }
 
-ingredient soybean_meal {
-  name "Soybean Meal 48%"
-  cost 450
+// Computed values and overrides
+ingredient org_corn {
+  name "ORG Corn"
+  cost corn.cost * 2
   nutrients {
-    protein 48.0
-    energy 2230
+    corn_base.nutrients
+    protein 8  // Override specific values
   }
 }
 ```
 
-### Formulas
+### Formulas with Inheritance
 
-Define formulas with nutrient requirements and ingredient constraints:
+Build formula families that share constraints:
 
 ```
-formula starter {
-  name "Starter Feed"
-  description "For chicks 0-3 weeks"
-  batch_size 1000
+template formula base {
+  batch 1000
+}
+
+formula con_1001 {
+  code "1001"
+  name "CON Starter"
+  desc "For chicks 0-3 weeks"
+  batch base.batch
 
   nutrients {
-    protein min 20 max 24
-    energy min 2900
-    fiber max 5
+    protein     min   20    max   24
+    energy      min 2900    max 2900
+    fiber                   max    5
+    calcium     min    0.9  max    1.2
+    phosphorus  min    0.4  max    0.7
   }
 
   ingredients {
-    corn max 70%
-    soybean_meal min 15% max 45%
-    limestone max 3%
+    corn                        max 50%
+    soybean_meal        min 15% max 45%
+    corn + soybean_meal         max 75%
+    wheat_midds                 max 20%
+    limestone                   max  3%
+    premix              min  1% max  1%
+  }
+}
+
+// Inherit and extend
+formula con_1002 {
+  code "1002"
+  name "CON Grower"
+  batch base.batch
+
+  nutrients {
+    con_1001.nutrients
+  }
+
+  ingredients {
+    con_1001.ingredients
+    corn_oil max 30%  // Add new constraint
   }
 }
 ```
 
-### Ingredient Groups
+### Nutrient Ratios
 
-Constrain multiple ingredients together:
+Constrain nutrient ratios with named aliases:
 
 ```
-ingredients {
-  corn + soybean_meal max 75%
+template formula ratios {
+  nutrients {
+    lysine min 12
+    lysine / arginine   min 0.1 as lysine_arginine
+    lysine / methionine min 0.1 as lysine_methionine
+  }
+}
+
+formula starter {
+  nutrients {
+    protein min 20 max 24
+    ratios.nutrients.lysine_arginine
+  }
+  // ...
 }
 ```
 
-## CLI Usage
+### Scaling Formulas
 
-```bash
-# Check a file for errors
-formulang check feed.fm
-
-# Parse and show the AST
-formulang parse feed.fm
-
-# Solve a formula
-formulang solve feed.fm starter
-
-# Solve with sensitivity analysis
-formulang solve feed.fm starter --analysis
-```
-
-## Project Structure
+Create product families from base definitions:
 
 ```
-formulang/
-├── crates/
-│   ├── formulang-lang/      # Lexer, parser, compiler, WASM bindings
-│   ├── formulang-solver/    # Linear programming solver
-│   └── formulang-cli/       # Command-line interface
-├── packages/
-│   ├── formulang-monaco/    # Monaco editor language support
-│   └── formulang-playground/ # Web playground (React + Vite)
-└── docs/
-    └── spec/                # Language specification and examples
+formula org_7001 {
+  code "7001"
+  name "ORG Starter"
+  batch 1000
+  nutrients { con_1001.nutrients }
+  ingredients {
+    org_corn                max 50%
+    soybean_meal    min 15% max 45%
+    org_corn + soybean_meal max 75%
+    // ...
+  }
+}
+
+// Rapidly define variants
+formula org_7002 {
+  code "7002"
+  name "ORG Grower"
+  batch 1000
+  nutrients { org_7001.nutrients }
+  ingredients { org_7001.ingredients }
+}
+
+formula org_7003 {
+  code "7003"
+  name "ORG Grower Plus"
+  batch 1000
+  nutrients { org_7001.nutrients }
+  ingredients {
+    org_7001.ingredients
+    corn_oil max 20%  // Customize
+  }
+}
 ```
 
 ## License
