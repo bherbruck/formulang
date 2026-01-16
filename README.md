@@ -9,12 +9,11 @@ A domain-specific language for least-cost feed formulation. Define nutrients, in
 ## Features
 
 - **Least-cost optimization** - Solves for the minimum cost formulation meeting all constraints
-- **Templates** - Reuse definitions across ingredients and formulas
-- **Reference expressions** - Access values from other definitions with dot notation
+- **Reference expressions** - Access values from any definition with dot notation
 - **Computed values** - Use expressions like `corn.cost * 2`
 - **Nutrient ratios** - Constrain ratios like `lysine / methionine min 0.1`
 - **Ingredient groups** - Constrain combinations like `corn + soybean_meal max 75%`
-- **Inheritance** - Spread nutrients and ingredients from other formulas
+- **Templates** - Abstract definitions that aren't solved, useful for shared base configs
 
 ## Examples
 
@@ -38,12 +37,13 @@ nutrient lysine {}
 nutrient methionine {}
 ```
 
-### Ingredients with Templates
+### Ingredients
 
-Define reusable templates and reference their values:
+Define ingredients and reference values from other ingredients:
 
 ```
-template ingredient corn_base {
+ingredient corn {
+  name "Yellow Corn"
   cost 0.15
   nutrients {
     protein 7.5
@@ -52,39 +52,37 @@ template ingredient corn_base {
   }
 }
 
-ingredient corn {
-  name "Yellow Corn"
-  cost corn_base.cost
-  nutrients {
-    corn_base.nutrients
-  }
-}
-
-// Computed values and overrides
+// Reference any ingredient's values
 ingredient org_corn {
   name "ORG Corn"
   cost corn.cost * 2
   nutrients {
-    corn_base.nutrients
+    corn.nutrients
     protein 8  // Override specific values
+  }
+}
+
+ingredient soybean_meal {
+  name "Soybean Meal"
+  cost 0.45
+  nutrients {
+    protein 48.0
+    energy 2230
+    fiber 3.5
   }
 }
 ```
 
-### Formulas with Inheritance
+### Formulas
 
-Build formula families that share constraints:
+Reference nutrients and ingredients from other formulas:
 
 ```
-template formula base {
-  batch 1000
-}
-
 formula con_1001 {
   code "1001"
   name "CON Starter"
   desc "For chicks 0-3 weeks"
-  batch base.batch
+  batch 1000
 
   nutrients {
     protein     min   20    max   24
@@ -104,11 +102,11 @@ formula con_1001 {
   }
 }
 
-// Inherit and extend
+// Reference another formula's constraints
 formula con_1002 {
   code "1002"
   name "CON Grower"
-  batch base.batch
+  batch 1000
 
   nutrients {
     con_1001.nutrients
@@ -119,6 +117,18 @@ formula con_1002 {
     corn_oil max 30%  // Add new constraint
   }
 }
+
+// Build variants quickly
+formula con_1003 {
+  code "1003"
+  name "CON Grower Plus"
+  batch 1000
+  nutrients { con_1002.nutrients }
+  ingredients {
+    con_1002.ingredients
+    corn_oil max 25%  // Override
+  }
+}
 ```
 
 ### Nutrient Ratios
@@ -126,58 +136,68 @@ formula con_1002 {
 Constrain nutrient ratios with named aliases:
 
 ```
-template formula ratios {
+formula starter {
   nutrients {
+    protein min 20 max 24
     lysine min 12
     lysine / arginine   min 0.1 as lysine_arginine
     lysine / methionine min 0.1 as lysine_methionine
   }
+  // ...
 }
 
-formula starter {
+// Reference the named ratio constraint
+formula grower {
   nutrients {
-    protein min 20 max 24
-    ratios.nutrients.lysine_arginine
+    protein min 18 max 22
+    starter.nutrients.lysine_arginine
   }
   // ...
 }
 ```
 
-### Scaling Formulas
+### Templates
 
-Create product families from base definitions:
+Templates are just definitions that aren't solved - useful for shared base configurations:
 
 ```
-formula org_7001 {
-  code "7001"
-  name "ORG Starter"
+template formula base {
   batch 1000
-  nutrients { con_1001.nutrients }
-  ingredients {
-    org_corn                max 50%
-    soybean_meal    min 15% max 45%
-    org_corn + soybean_meal max 75%
-    // ...
+}
+
+template formula high_protein {
+  nutrients {
+    protein min 22 max 26
   }
 }
 
-// Rapidly define variants
-formula org_7002 {
-  code "7002"
-  name "ORG Grower"
-  batch 1000
-  nutrients { org_7001.nutrients }
-  ingredients { org_7001.ingredients }
+formula starter {
+  batch base.batch
+  nutrients {
+    high_protein.nutrients
+    energy min 2900
+  }
+  // ...
+}
+```
+
+Templates work the same way for ingredients:
+
+```
+template ingredient grain_base {
+  nutrients {
+    fiber 2.5
+    calcium 0.02
+  }
 }
 
-formula org_7003 {
-  code "7003"
-  name "ORG Grower Plus"
-  batch 1000
-  nutrients { org_7001.nutrients }
-  ingredients {
-    org_7001.ingredients
-    corn_oil max 20%  // Customize
+ingredient corn {
+  name "Yellow Corn"
+  cost 0.15
+  nutrients {
+    grain_base.nutrients
+    protein 7.5
+    energy 3350
   }
 }
 ```
